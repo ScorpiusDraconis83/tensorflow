@@ -16,13 +16,15 @@ limitations under the License.
 #include "tensorflow/core/data/serialization_utils.h"
 
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "absl/container/flat_hash_set.h"
+#include "absl/status/statusor.h"
+#include "xla/tsl/platform/statusor.h"
+#include "xla/tsl/protobuf/error_codes.pb.h"
 #include "tensorflow/core/common_runtime/device_factory.h"
 #include "tensorflow/core/data/dataset_test_base.h"
 #include "tensorflow/core/data/dataset_utils.h"
@@ -44,7 +46,6 @@ limitations under the License.
 #include "tensorflow/core/public/session_options.h"
 #include "tensorflow/core/public/version.h"
 #include "tensorflow/core/util/work_sharder.h"
-#include "tsl/platform/statusor.h"
 
 namespace tensorflow {
 namespace data {
@@ -183,7 +184,7 @@ class ParameterizedIteratorStateVariantTest
     return data;
   }
 
-  StatusOr<VariantTensorData> EncodeAndDecode(
+  absl::StatusOr<VariantTensorData> EncodeAndDecode(
       const VariantTensorData& data) const {
     IteratorStateVariant encoder;
     TF_RETURN_IF_ERROR(encoder.InitializeFromVariantData(
@@ -196,7 +197,7 @@ class ParameterizedIteratorStateVariantTest
     return *decoder.GetData();
   }
 
-  StatusOr<VariantTensorData> DecodeUncompressed(
+  absl::StatusOr<VariantTensorData> DecodeUncompressed(
       const VariantTensorData& data) const {
     IteratorStateVariant decoder;
     decoder.Decode(data);

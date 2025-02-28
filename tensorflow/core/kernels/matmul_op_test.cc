@@ -20,6 +20,7 @@ limitations under the License.
 #include "absl/strings/match.h"
 #include "tensorflow/cc/ops/nn_ops_internal.h"
 #include "tensorflow/cc/ops/standard_ops.h"
+#include "xla/tsl/platform/status.h"
 #include "tensorflow/core/common_runtime/kernel_benchmark_testlib.h"
 #include "tensorflow/core/framework/ops_util.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -30,7 +31,6 @@ limitations under the License.
 #include "tensorflow/core/platform/test_benchmark.h"
 #include "tensorflow/core/protobuf/rewriter_config.pb.h"
 #include "tensorflow/core/public/session.h"
-#include "tsl/platform/status.h"
 
 #if TENSORFLOW_USE_ROCM
 #include "rocm/rocm_config.h"
@@ -55,7 +55,7 @@ class FusedMatMulOpTest : public OpsTestBase {
   void RunAndFetch(const tensorflow::Scope& root, const string& fetch,
                    Tensor* output, bool allow_gpu_device,
                    const NodeDef* fetch_node = nullptr,
-                   tsl::Status* last_status = nullptr) {
+                   absl::Status* last_status = nullptr) {
     tensorflow::GraphDef graph;
     TF_ASSERT_OK(root.ToGraphDef(&graph));
 
@@ -208,7 +208,7 @@ class FusedMatMulOpTest : public OpsTestBase {
                      .Attr("transpose_b", transpose_b)
                      .Finalize(&fused_matmul));
 
-    tsl::Status last_status;
+    absl::Status last_status;
     RunAndFetch(root, fused_matmul.name(), output, allow_gpu_device,
                 &fused_matmul, &last_status);
 

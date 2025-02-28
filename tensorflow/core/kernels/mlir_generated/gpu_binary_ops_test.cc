@@ -1015,6 +1015,12 @@ T baseline_mul(T lhs, T rhs) {
   return lhs * rhs;
 }
 
+template <typename T>
+std::complex<T> baseline_cmulf(std::complex<T> lhs, std::complex<T> rhs) {
+  return std::complex<T>(lhs.real() * rhs.real() - lhs.imag() * rhs.imag(),
+                         lhs.real() * rhs.imag() + lhs.imag() * rhs.real());
+}
+
 GENERATE_DEFAULT_TESTS(Mul, /*test_name=*/Half, Eigen::half, Eigen::half,
                        baseline_mul,
                        test::OpsTestConfig().ExpectStrictlyEqual())
@@ -1056,7 +1062,7 @@ TEST_F(BinaryOpsTest, MulComplex64SpecialCases) {
       test::NearZeroInfAndNanInput<std::complex<float>>(),
       test::RepeatElements(test::NearZeroInfAndNanInput<std::complex<float>>(),
                            64),
-      baseline_mul, test::OpsTestConfig());
+      baseline_cmulf, test::OpsTestConfig());
 }
 
 TEST_F(BinaryOpsTest, MulComplex128SpecialCases) {
@@ -1066,7 +1072,7 @@ TEST_F(BinaryOpsTest, MulComplex128SpecialCases) {
       test::NearZeroInfAndNanInput<std::complex<double>>(),
       test::RepeatElements(test::NearZeroInfAndNanInput<std::complex<double>>(),
                            64),
-      baseline_mul, test::OpsTestConfig());
+      baseline_cmulf, test::OpsTestConfig());
 }
 #endif
 
@@ -1503,7 +1509,7 @@ GENERATE_DEFAULT_TESTS(Xlogy, /*test_name=*/Complex64, std::complex<float>,
                        test::OpsTestConfig().ATol(2e-6).RTol(2e-6))
 GENERATE_DEFAULT_TESTS(Xlogy, /*test_name=*/Complex128, std::complex<double>,
                        std::complex<double>, baseline_xlogy,
-                       test::OpsTestConfig())
+                       test::OpsTestConfig().ATol(1e-12).RTol(1e-12))
 
 /// Test `tf.Xlog1py`.
 

@@ -1,4 +1,4 @@
-/* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2023 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "xla/hlo/ir/hlo_instruction.h"
@@ -31,7 +32,6 @@ limitations under the License.
 #include "xla/service/latency_hiding_scheduler.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
-#include "xla/statusor.h"
 #include "xla/stream_executor/device_description.h"
 #include "tsl/platform/statusor.h"
 #include "tsl/platform/test.h"
@@ -56,7 +56,7 @@ SchedulerConfig GetDefaultSchedulerConfig() {
   return scheduler_config;
 }
 
-StatusOr<bool> RunScheduler(
+absl::StatusOr<bool> RunScheduler(
     HloModule* module, const SchedulerConfig& sched_config,
     std::unique_ptr<LatencyEstimator> latency_estimator =
         std::make_unique<ApproximateLatencyEstimator>()) {
@@ -86,7 +86,7 @@ StatusOr<bool> RunScheduler(
 
 class AnalyticalLatencyHidingSchedulerTest : public GpuCodegenTest {
  public:
-  StatusOr<std::unique_ptr<HloModule>> ParseHloText(
+  absl::StatusOr<std::unique_ptr<HloModule>> ParseHloText(
       absl::string_view hlo_string) {
     return ParseAndReturnVerifiedModule(hlo_string, GetModuleConfigForTest());
   }
@@ -95,12 +95,6 @@ class AnalyticalLatencyHidingSchedulerTest : public GpuCodegenTest {
         .default_stream_executor()
         ->GetDeviceDescription()
         .cuda_compute_capability();
-  }
-  HloCostAnalysis::ShapeSizeFunction ShapeSizeBytesFunction() const {
-    return [&](const Shape& shape) {
-      constexpr int64_t kPointerSize = 8;
-      return ShapeUtil::ByteSizeOf(shape, kPointerSize);
-    };
   }
 };
 
@@ -128,8 +122,8 @@ ENTRY entry {
   p1 = f32[16,64,256]{2,1,0} parameter(1)
   p2 = f32[1024,2048,2048]{2,1,0} parameter(2)
   p3 = f32[2048,2048,2048]{2,1,0} parameter(3)
-  all-reduce-start.1 = f32[1024,2048,2048]{2,1,0} all-reduce-start(p2), channel_id=8, replica_groups={{0}}, to_apply=region_20.995, backend_config="{\"is_sync\":false}"
-  all-reduce-start.2 = f32[2048,2048,2048]{2,1,0} all-reduce-start(p3), channel_id=10, replica_groups={{0}}, to_apply=region_20.995, backend_config="{\"is_sync\":false}"
+  all-reduce-start.1 = f32[1024,2048,2048]{2,1,0} all-reduce-start(p2), channel_id=8, replica_groups={{0}}, to_apply=region_20.995, backend_config={"collective_backend_config": {"is_sync": false}}
+  all-reduce-start.2 = f32[2048,2048,2048]{2,1,0} all-reduce-start(p3), channel_id=10, replica_groups={{0}}, to_apply=region_20.995, backend_config={"collective_backend_config": {"is_sync": false}}
 
   all-reduce-done.1 = f32[1024,2048,2048]{2,1,0} all-reduce-done(all-reduce-start.1)
   all-reduce-done.2 = f32[2048,2048,2048]{2,1,0} all-reduce-done(all-reduce-start.2)
@@ -149,7 +143,8 @@ ENTRY entry {
   auto scheduler_config = GetDefaultSchedulerConfig();
   auto latency_estimator = std::make_unique<AnalyticalLatencyEstimator>(
       scheduler_config, std::make_unique<ApproximateLatencyEstimator>(),
-      dev_info, ShapeSizeBytesFunction(), hlo_module->entry_computation());
+      dev_info, HloCostAnalysis::DefaultShapeSize,
+      hlo_module->entry_computation());
   EXPECT_TRUE(RunScheduler(hlo_module.get(), scheduler_config,
                            std::move(latency_estimator))
                   .ok());

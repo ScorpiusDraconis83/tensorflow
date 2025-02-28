@@ -38,7 +38,7 @@ from tensorflow.python.platform import test
 
 def serialize(module_str: str) -> tuple[str, int]:
   target = stablehlo.get_minimum_version()
-  byte_str = stablehlo.serialize_portable_artifact(module_str, target)
+  byte_str = stablehlo.serialize_portable_artifact_str(module_str, target)
   return byte_str, xla.call_module_maximum_supported_version()
 
 
@@ -247,27 +247,6 @@ module @jit_f.0 attributes {{jax.uses_shape_polymorphism = true}} {{
 
     self._assertOpOutputMatchesExpected(f, (x,), (np.sin(x), x.shape[1]))
 
-  def test_poly_unranked(self):
-    x = np.arange(6, dtype=np.float32).reshape((2, 3))
-
-    def f(x):  # x: f32[2, b]
-      # sin(x)
-      module, version = serialize("""
-module @jit_f.0 attributes {jax.uses_shape_polymorphism = true} {
-  func.func public @main(%arg1: tensor<*xf32>) -> tensor<*xf32> {
-    %0 = stablehlo.sine %arg1 : tensor<*xf32>
-    return %0 : tensor<*xf32>
-  }
-}
-""")
-      return xla.call_module([x],
-                             module=module, version=version,
-                             Tout=[x.dtype],
-                             Sout=[(None, None),],
-                             platforms=[self.testing_platform()],)
-
-    self._assertOpOutputMatchesExpected(f, (x,), (np.sin(x),))
-
   def test_wrong_actual_args_errors(self):
     x = np.arange(6, dtype=np.float32).reshape((3, 2))
     y = np.arange(6, dtype=np.int32).reshape((2, 3))
@@ -296,24 +275,30 @@ module @jit_f.0 attributes {jax.uses_shape_polymorphism = true} {
     x_bad_etype = x.astype(np.int32)
     with self.assertRaisesRegex(
         errors.InvalidArgumentError,
-        'Element type mismatch for argument 0 passed to XlaCallModule: '
-        r'expecting tensor<\?x2xf32>, got tensor<3x2xi32>',
+        re.escape(
+            'invalid refinement for argument 0, refinement element types must'
+            ' match in tensor<?x2xf32> -> tensor<3x2xi32>'
+        ),
     ):
       self._assertOpOutputMatchesExpected(f, (x_bad_etype, y), (x_bad_etype,))
 
     y_bad_etype = y.astype(np.float32)
     with self.assertRaisesRegex(
         errors.InvalidArgumentError,
-        'Element type mismatch for argument 1 passed to XlaCallModule: '
-        r'expecting tensor<\*xi32>, got tensor<2x3xf32>',
+        re.escape(
+            'invalid refinement for argument 1, refinement element types must'
+            ' match in tensor<*xi32> -> tensor<2x3xf32>'
+        ),
     ):
       self._assertOpOutputMatchesExpected(f, (x, y_bad_etype), (x,))
 
     x_bad_shape = np.arange(15, dtype=np.float32).reshape(5, 3)
     with self.assertRaisesRegex(
         errors.InvalidArgumentError,
-        'Shape mismatch for argument 0 passed to XlaCallModule: '
-        r'expecting tensor<\?x2xf32>, got tensor<5x3xf32>',
+        re.escape(
+            'invalid refinement for argument 0, refinement dimension sizes must'
+            ' match for static dimensions in tensor<?x2xf32> -> tensor<5x3xf32>'
+        ),
     ):
       self._assertOpOutputMatchesExpected(f, (x_bad_shape, y), (x_bad_shape,))
 
@@ -861,7 +846,7 @@ module @jit_f.0 {
   }
 }
 """)
-    platforms = ['TPU']  # the module is compileable only on TPU
+    platforms = ['TPU']  # the module is compilable only on TPU
     def f(x):
       return xla.call_module([x], version=version,
                              module=module,
@@ -1018,7 +1003,7 @@ module @jit_fun.0 attributes {jax.uses_shape_polymorphism = true} {
     %2 = stablehlo.reshape %arg0 : (tensor<i32>) -> tensor<1xi32>
     %3 = stablehlo.constant dense<4> : tensor<1xi32>
     %4 = "stablehlo.concatenate"(%0, %2, %3) {dimension = 0 : i64} : (tensor<1xi32>, tensor<1xi32>, tensor<1xi32>) -> tensor<3xi32>
-    %5 = "stablehlo.dynamic_broadcast_in_dim"(%arg1, %4) {broadcast_dimensions = dense<[1, 2]> : tensor<2xi64>} : (tensor<?x4xf32>, tensor<3xi32>) -> tensor<2x?x4xf32>
+    %5 = "stablehlo.dynamic_broadcast_in_dim"(%arg1, %4) {broadcast_dimensions = array<i64: 1, 2>} : (tensor<?x4xf32>, tensor<3xi32>) -> tensor<2x?x4xf32>
     %6 = stablehlo.add %5, %arg2 : (tensor<2x?x4xf32>, tensor<2x?x4xf32>) -> tensor<2x?x4xf32>
     return %5, %6 : tensor<2x?x4xf32>, tensor<2x?x4xf32>
   }
@@ -1160,7 +1145,7 @@ module @jit_fun_3 attributes {jax.uses_shape_polymorphism = true} {
   def test_while(self):
     """A while loop with carryied dynamic shapes."""
     x = np.ones((5,), dtype=np.float32)
-    # Compute the result in Pyton first
+    # Compute the result in Python first
     res0 = np.copy(x)
     for _ in range(5):
       res0 += np.arange(x.shape[0], dtype=np.float32)
@@ -1475,7 +1460,7 @@ module @jit_fun_flat_jax {
     res1 = x - y
 
     # Verify that multiple inner TF function calls with the same private
-    # functions are properly renamed during MHLO import. This test case is
+    # functions are properly renamed during StableHLO import. This test case is
     # carefully constructed such that one outer XlaCallModule op has two custom
     # calls, each of which has the same private "@call" function with different
     # body. This is to catch bugs in the func renaming logic.
@@ -1555,7 +1540,7 @@ module @jit_fun_flat_jax {
     self._assertOpOutputMatchesExpected(f, (x, y), (res0, res1))
 
   def test_op_backward_compatibility(self):
-    """Test for ensuring XlaCallModuleOp backward compatiblity."""
+    """Test for ensuring XlaCallModuleOp backward compatibility."""
     x = np.array([1.0, 2.0, 3.0], dtype=np.float32)
 
     def f(x):

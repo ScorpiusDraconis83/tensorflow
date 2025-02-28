@@ -1,4 +1,4 @@
-/* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2023 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -13,9 +13,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <variant>
+
 #include <gtest/gtest.h>
 #include "absl/strings/string_view.h"
 #include "xla/error_spec.h"
+#include "xla/service/gpu/variant_visitor.h"
 #include "xla/stream_executor/device_description.h"
 #include "xla/tests/hlo_test_base.h"
 #include "xla/xla.pb.h"
@@ -36,7 +39,7 @@ class FloatSupportTest : public HloTestBase {
 
 class FloatSupportTestWithCublas : public FloatSupportTest {
  public:
-  DebugOptions GetDebugOptionsForTest() override {
+  DebugOptions GetDebugOptionsForTest() const override {
     DebugOptions debug_options = FloatSupportTest::GetDebugOptionsForTest();
     debug_options.set_xla_gpu_enable_triton_gemm(false);
     return debug_options;
@@ -45,10 +48,10 @@ class FloatSupportTestWithCublas : public FloatSupportTest {
 
 class FloatSupportTestWithTriton : public FloatSupportTest {
  public:
-  DebugOptions GetDebugOptionsForTest() override {
+  DebugOptions GetDebugOptionsForTest() const override {
     DebugOptions debug_options = FloatSupportTest::GetDebugOptionsForTest();
     debug_options.set_xla_gpu_enable_triton_gemm(true);
-    debug_options.set_xla_gpu_triton_gemm_any(true);
+    debug_options.set_xla_gpu_unsupported_force_triton_gemm(true);
     debug_options.set_xla_gpu_cublas_fallback(false);
     return debug_options;
   }
@@ -72,13 +75,12 @@ ENTRY e {
 }
 
 TEST_F(FloatSupportTestWithTriton, MixedTypeDotWithBF16IsNotUpcasted) {
-  bool skip_test =
-      std::visit(se::VariantVisitor{
-                     [](const se::CudaComputeCapability& cc) {
+  bool skip_test = std::visit(
+      VariantVisitor{[](const se::CudaComputeCapability& cc) {
                        return !cc.IsAtLeast(se::CudaComputeCapability::AMPERE);
                      },
                      [](const se::RocmComputeCapability&) { return true; }},
-                 GetGpuComputeCapability());
+      GetGpuComputeCapability());
 
   if (skip_test) {
     GTEST_SKIP() << "Not supported on this GPU architecture";

@@ -1,4 +1,4 @@
-/* Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2017 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,6 +22,8 @@ limitations under the License.
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "absl/algorithm/container.h"
+#include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/strings/string_view.h"
 #include "xla/comparison_util.h"
@@ -30,12 +32,13 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/hlo/parser/hlo_parser.h"
 #include "xla/hlo/utils/hlo_matchers.h"
+#include "xla/hlo/utils/hlo_query.h"
 #include "xla/layout.h"
 #include "xla/layout_util.h"
 #include "xla/literal_util.h"
 #include "xla/service/hlo_module_config.h"
-#include "xla/service/hlo_parser.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/test.h"
@@ -1301,7 +1304,7 @@ TEST_F(WhileCopyInsertionTest, InitPointsToInterfering) {
 // by another while instruction.
 //
 // Verifies that the resulting point-to set is distinct in the resulting Tuple
-// (non-identical Copys). In other words, verifies that copy sharing does not
+// (non-identical Copies). In other words, verifies that copy sharing does not
 // insert identical copies to the resulting tuple.
 TEST_F(WhileCopyInsertionTest, InitPointsToNonDistinctUsedByTwoWhileLoops) {
   // Loop body that outputs tuple comprises two elements dependent on the init
@@ -3170,6 +3173,113 @@ ENTRY TestComputation {
   CHECK_EQ(tuple6->opcode(), HloOpcode::kParameter);
 }
 
+TEST_F(CopyInsertionTest, ConditionalWithMultiOutputFusion) {
+  const std::string& hlo_string = R"(
+HloModule TestModule
+
+branch_0 {
+  param_0 = f64[] parameter(0)
+  negate.2 = f64[] negate(f64[] param_0)
+  ROOT tuple = (f64[], f64[]) tuple(f64[] negate.2, f64[] negate.2)
+}
+
+fused_computation {
+  param_0.1 = f64[] parameter(0)
+  abs.2 = f64[] abs(f64[] param_0.1)
+  negate.1 = f64[] negate(f64[] param_0.1)
+  ROOT %tuple.2 = (f64[], f64[]) tuple(f64[] negate.1, f64[] abs.2)
+}
+
+branch_1 {
+  param_0.2 = f64[] parameter(0)
+  ROOT fusion = (f64[], f64[]) fusion(f64[] param_0.2), kind=kLoop, calls=%fused_computation
+}
+
+ENTRY main {
+  pred.0 = s32[] parameter(0)
+  param_1 = f64[] parameter(1)
+  param_2 = f64[] parameter(2)
+  ROOT conditional.0 = (f64[], f64[]) conditional(s32[] pred.0, f64[] param_1, f64[] param_2), branch_computations={%branch_0, %branch_1}
+}
+)";
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          ParseAndReturnVerifiedModule(hlo_string));
+  CopyInsertion copy_insertion(nullptr,
+                               /*use_region_based_live_range_analysis=*/-1);
+  ASSERT_IS_OK(copy_insertion.Run(module.get()).status());
+  VLOG(3) << module->ToString();
+
+  // `branch_0` returns the same result of `negate.2` twice. Normally the result
+  // would be put into one buffer and tuple would return two pointers to the
+  // same buffer.
+  // `branch_1` returns two results of multi-output fusion that should be put
+  // into different buffers.
+  // One copy is inserted in `branch_0` to ensure that result are put into two
+  // different buffers.
+  EXPECT_EQ(CountCopies(*module->GetComputationWithName("branch_0")), 1);
+
+  EXPECT_EQ(CountCopies(*module->GetComputationWithName("branch_1")), 0);
+  EXPECT_EQ(CountCopies(*module->GetComputationWithName("main")), 0);
+}
+
+TEST_F(CopyInsertionTest, ConditionalWithVariadicReduce) {
+  const std::string& hlo_string = R"(
+HloModule TestModule
+
+branch_0 {
+  empty_tuple.0 = () parameter(0)
+  c_0 = f64[] constant(0)
+  ROOT tuple.3 = (f64[], f64[]) tuple(c_0, c_0)
+}
+
+fused_computation {
+  param_0.1 = f64[] parameter(0)
+  abs.2 = f64[] abs(f64[] param_0.1)
+  negate.1 = f64[] negate(f64[] param_0.1)
+  ROOT %tuple.2 = (f64[], f64[]) tuple(f64[] negate.1, f64[] abs.2)
+}
+
+reduce_region {
+  param_0.0 = f64[] parameter(0)
+  param_2.0 = f64[] parameter(2)
+  add.1.0 = f64[] add(param_0.0, param_2.0)
+  param_1.0 = f64[] parameter(1)
+  param_3.0 = f64[] parameter(3)
+  multiply.1.0 = f64[] multiply(param_1.0, param_3.0)
+  ROOT tuple.0.0 = (f64[], f64[]) tuple(add.1.0, multiply.1.0)
+}
+
+branch_1 {
+  c_0 = f64[] constant(0)
+  param_0.1 = f64[128]{0} parameter(0)
+  ROOT reduce = (f64[], f64[]) reduce(param_0.1, param_0.1, c_0, c_0), dimensions={0}, to_apply=reduce_region
+}
+
+ENTRY main {
+  pred.0 = s32[] parameter(0)
+  empty_tuple = () tuple()
+  param_2 = f64[128] parameter(1), sharding={replicated}
+  ROOT conditional.0 = (f64[], f64[]) conditional(s32[] pred.0, () empty_tuple, f64[128] param_2), branch_computations={%branch_0, %branch_1}
+}
+)";
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          ParseAndReturnVerifiedModule(hlo_string));
+  CopyInsertion copy_insertion(nullptr,
+                               /*use_region_based_live_range_analysis=*/-1);
+  ASSERT_IS_OK(copy_insertion.Run(module.get()).status());
+  VLOG(3) << module->ToString();
+
+  // `branch_0` returns the same constant twice. Without copies it would return
+  // pointers to read-only buffer for constant.
+  // `branch_1` returns two results of a that should be put into different
+  // buffers.
+  // `conditional` needs to buffers for results, so the constant in `branch_0`
+  // should be copied twice.
+  EXPECT_EQ(CountCopies(*module->GetComputationWithName("branch_0")), 2);
+  EXPECT_EQ(CountCopies(*module->GetComputationWithName("branch_1")), 0);
+  EXPECT_EQ(CountCopies(*module->GetComputationWithName("main")), 0);
+}
+
 TEST_F(CopyInsertionTest, RootInstructionNotLast) {
   // This is a test for b/189219227. When the root instruction is scheduled not
   // as the last instruction, it still lives out. So, we make sure that the copy
@@ -3451,8 +3561,8 @@ HloModule async_call
 ENTRY %main {
   %input.1 = s32[1024]{0} parameter(0)
   %buf = s32[1024]{0} custom-call(), custom_call_target="AllocateBuffer"
-  %async-start = ((s32[1024]{0}, s32[1024]{0}), s32[1024]{0}, u32[]) async-start(s32[1024]{0} %input.1, s32[1024]{0} %buf), async_group_id=0, async_execution_thread="foobar", calls=%async_wrapped
-  ROOT %async-done = s32[1024]{0} async-done(((s32[1024]{0}, s32[1024]{0}), s32[1024]{0}, u32[]) %async-start), async_group_id=0, async_execution_thread="foobar", calls=%async_wrapped
+  %async-start = ((s32[1024]{0}, s32[1024]{0}), s32[1024]{0}, u32[]) async-start(s32[1024]{0} %input.1, s32[1024]{0} %buf), async_execution_thread="foobar", calls=%async_wrapped
+  ROOT %async-done = s32[1024]{0} async-done(((s32[1024]{0}, s32[1024]{0}), s32[1024]{0}, u32[]) %async-start), async_execution_thread="foobar", calls=%async_wrapped
 }
 )";
 
@@ -3490,8 +3600,8 @@ HloModule async_call
 ENTRY %main {
   %input.1 = s32[1024]{0} parameter(0)
   %input.2 = s32[1024]{0} parameter(1)
-  %async-start = ((s32[1024]{0}, s32[1024]{0}), s32[1024]{0}, u32[]) async-start(s32[1024]{0} %input.1, s32[1024]{0} %input.2), async_group_id=0, async_execution_thread="foobar", calls=%async_wrapped
-  ROOT %async-done = s32[1024]{0} async-done(((s32[1024]{0}, s32[1024]{0}), s32[1024]{0}, u32[]) %async-start), async_group_id=0, async_execution_thread="foobar", calls=%async_wrapped
+  %async-start = ((s32[1024]{0}, s32[1024]{0}), s32[1024]{0}, u32[]) async-start(s32[1024]{0} %input.1, s32[1024]{0} %input.2), async_execution_thread="foobar", calls=%async_wrapped
+  ROOT %async-done = s32[1024]{0} async-done(((s32[1024]{0}, s32[1024]{0}), s32[1024]{0}, u32[]) %async-start), async_execution_thread="foobar", calls=%async_wrapped
 }
 )";
 
@@ -3737,8 +3847,8 @@ body {
   input.2 = s32[256]{0} get-tuple-element(input_tuple), index=1
   input.3 = s32[] get-tuple-element(input_tuple), index=2
   input.4 = pred[] get-tuple-element(input_tuple), index=3
-  async-start = ((s32[1024]{0}, s32[256]{0}, s32[]), s32[1024]{0}, u32[]) async-start(input.1, input.2, input.3), async_group_id=0, calls=%async_wrapped
-  async-done = s32[1024]{0} async-done(async-start), async_group_id=0, calls=async_wrapped
+  async-start = ((s32[1024]{0}, s32[256]{0}, s32[]), s32[1024]{0}, u32[]) async-start(input.1, input.2, input.3), calls=%async_wrapped
+  async-done = s32[1024]{0} async-done(async-start), calls=async_wrapped
   ROOT tuple = (s32[1024]{0}, s32[256]{0}, s32[], pred[]) tuple(async-done, input.2, input.3, input.4)
 }
 
@@ -3760,6 +3870,378 @@ ENTRY main {
   ASSERT_IS_OK(copy_insertion.Run(module.get()).status());
   VLOG(2) << module->ToString();
   EXPECT_EQ(CountCopies(*module), 0);
+}
+
+TEST_F(CopyInsertionTest, PartiallyPipelinedAsyncRecv) {
+  constexpr absl::string_view kModuleString = R"(
+    HloModule test, entry_computation_layout={()->f32[16]{0}}, num_partitions=4
+
+    while_body {
+      param = ((f32[16]{0}, u32[], token[])) parameter(0)
+      prev_recv = (f32[16]{0}, u32[], token[]) get-tuple-element(param), index=0
+      recv_done = (f32[16]{0}, token[]) recv-done(prev_recv), channel_id=1
+      after_all = token[] after-all()
+      recv = (f32[16]{0}, u32[], token[]) recv(after_all), channel_id=1,
+          frontend_attributes={
+            _xla_send_recv_source_target_pairs={{0,1},{1,2},{2,3}}}
+      ROOT tuple = ((f32[16]{0}, u32[], token[])) tuple(recv)
+    }
+
+    // Infinite loop to keep IR small.
+    while_condition {
+      param = ((f32[16]{0}, u32[], token[])) parameter(0)
+      ROOT infinite_loop = pred[] constant(true)
+    }
+
+    ENTRY main_spmd {
+      after_all = token[] after-all()
+      recv = (f32[16]{0}, u32[], token[]) recv(after_all), channel_id=1,
+          frontend_attributes={
+            _xla_send_recv_source_target_pairs={{0,1},{1,2},{2,3}}}
+      init = ((f32[16]{0}, u32[], token[])) tuple(recv)
+      while = ((f32[16]{0}, u32[], token[])) while(init),
+          condition=while_condition, body=while_body
+      recv_ctx = (f32[16]{0}, u32[], token[]) get-tuple-element(while), index=0
+      recv_done = (f32[16]{0}, token[]) recv-done(recv_ctx), channel_id=1
+      ROOT result = f32[16]{0} get-tuple-element(recv_done), index=0
+    }
+    )";
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<xla::HloModule> module,
+                          ParseAndReturnVerifiedModule(kModuleString));
+  CopyInsertion copy_insertion(nullptr,
+                               /*use_region_based_live_range_analysis=*/-1);
+
+  ASSERT_IS_OK(copy_insertion.Run(module.get()).status());
+  VLOG(2) << module->ToString();
+
+  // All async start/end will be ordered so that all copies are removable.
+  EXPECT_EQ(CountCopies(*module), 0);
+
+  // Expect control dependency from recv-done to recv.
+  HloComputation* while_body =
+      hlo_query::FindComputation(module.get(), "while_body");
+  HloInstruction* recv_done =
+      hlo_query::FindInstruction(while_body, HloOpcode::kRecvDone);
+  HloInstruction* recv =
+      hlo_query::FindInstruction(while_body, HloOpcode::kRecv);
+  EXPECT_THAT(recv->control_predecessors(), UnorderedElementsAre(recv_done));
+}
+
+TEST_F(CopyInsertionTest, PartiallyPipelinedAsyncRecvMultipleUses) {
+  constexpr absl::string_view kModuleString = R"(
+    HloModule test, entry_computation_layout={(f32[16]{0})->f32[16]{0}},
+        num_partitions=4
+
+    while_body {
+      param = ((f32[16]{0}, u32[], token[]), f32[16]{0}) parameter(0)
+      prev_recv = (f32[16]{0}, u32[], token[]) get-tuple-element(param), index=0
+      recv_done = (f32[16]{0}, token[]) recv-done(prev_recv), channel_id=1
+      recv_data = f32[16]{0} get-tuple-element(recv_done), index=0
+      after_all = token[] after-all()
+      recv = (f32[16]{0}, u32[], token[]) recv(after_all), channel_id=1,
+          frontend_attributes={
+            _xla_send_recv_source_target_pairs={{0,1},{1,2},{2,3}}}
+
+      // `recv_data` is again here, which extends it's live range.
+      ROOT tuple = ((f32[16]{0}, u32[], token[]), f32[16]{0}) tuple(recv,
+          recv_data)
+    }
+
+    // Infinite loop to keep IR small.
+    while_condition {
+      param = ((f32[16]{0}, u32[], token[]), f32[16]{0}) parameter(0)
+      ROOT infinite_loop = pred[] constant(true)
+    }
+
+    ENTRY main_spmd {
+      data = f32[16]{0} parameter(0)
+      after_all = token[] after-all()
+      recv = (f32[16]{0}, u32[], token[]) recv(after_all), channel_id=1,
+          frontend_attributes={
+            _xla_send_recv_source_target_pairs={{0,1},{1,2},{2,3}}}
+      init = ((f32[16]{0}, u32[], token[]), f32[16]{0}) tuple(recv, data)
+      while = ((f32[16]{0}, u32[], token[]), f32[16]{0}) while(init),
+          condition=while_condition, body=while_body
+      recv_ctx = (f32[16]{0}, u32[], token[]) get-tuple-element(while), index=0
+      recv_done = (f32[16]{0}, token[]) recv-done(recv_ctx), channel_id=1
+      ROOT result = f32[16]{0} get-tuple-element(recv_done), index=0
+    }
+    )";
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<xla::HloModule> module,
+                          ParseAndReturnVerifiedModule(kModuleString));
+  CopyInsertion copy_insertion(nullptr,
+                               /*use_region_based_live_range_analysis=*/-1);
+
+  ASSERT_IS_OK(copy_insertion.Run(module.get()).status());
+  VLOG(2) << module->ToString();
+
+  // All async start/end will be ordered so that all copies, except for an extra
+  // use of the recv result, are removable. Additionally, there will be one copy
+  // leading into the loop.
+  HloComputation* while_body =
+      hlo_query::FindComputation(module.get(), "while_body");
+  EXPECT_EQ(CountCopies(*module), 2);
+  EXPECT_EQ(CountCopies(*while_body), 1);
+
+  // Expect control dependency from recv-done to recv.
+  HloInstruction* recv_done =
+      hlo_query::FindInstruction(while_body, HloOpcode::kRecvDone);
+  HloInstruction* recv =
+      hlo_query::FindInstruction(while_body, HloOpcode::kRecv);
+  HloInstruction* recv_done_copy =
+      hlo_query::FindInstruction(while_body, HloOpcode::kCopy);
+  EXPECT_THAT(recv_done_copy, op::Copy(op::GetTupleElement(recv_done)));
+  EXPECT_THAT(recv->control_predecessors(),
+              UnorderedElementsAre(recv_done, recv_done_copy));
+}
+
+TEST_F(CopyInsertionTest, PartiallyPipelinedAsyncSendMultipleUses) {
+  constexpr absl::string_view kModuleString = R"(
+    HloModule test, entry_computation_layout={(f32[16]{0})->f32[16]{0}},
+        num_partitions=4
+
+    while_body {
+      param = ((f32[16]{0}, u32[], token[]), f32[16]{0}) parameter(0)
+      prev_send = (f32[16]{0}, u32[], token[]) get-tuple-element(param), index=0
+      data = f32[16]{0} get-tuple-element(param), index=1
+      send_done = (f32[16]{0}, token[]) send-done(prev_send), channel_id=1
+      after_all = token[] after-all()
+      send = (f32[16]{0}, u32[], token[]) send(data, after_all), channel_id=1,
+          frontend_attributes={
+            _xla_send_send_source_target_pairs={{0,1},{1,2},{2,3}}}
+
+      // `data` is used again here, which extends it's live range beyond `send`.
+      ROOT tuple = ((f32[16]{0}, u32[], token[]), f32[16]{0}) tuple(send, data)
+    }
+
+    // Infinite loop to keep IR small.
+    while_condition {
+      param = ((f32[16]{0}, u32[], token[]), f32[16]{0}) parameter(0)
+      ROOT infinite_loop = pred[] constant(true)
+    }
+
+    ENTRY main_spmd {
+      data = f32[16]{0} parameter(0)
+      after_all = token[] after-all()
+      send = (f32[16]{0}, u32[], token[]) send(data, after_all), channel_id=1,
+          frontend_attributes={
+            _xla_send_send_source_target_pairs={{0,1},{1,2},{2,3}}}
+      init = ((f32[16]{0}, u32[], token[]), f32[16]{0}) tuple(send, data)
+      while = ((f32[16]{0}, u32[], token[]), f32[16]{0}) while(init),
+          condition=while_condition, body=while_body
+      send_ctx = (f32[16]{0}, u32[], token[]) get-tuple-element(while), index=0
+      send_done = (f32[16]{0}, token[]) send-done(send_ctx), channel_id=1
+      ROOT data_ = f32[16]{0} get-tuple-element(while), index=1
+    }
+    )";
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<xla::HloModule> module,
+                          ParseAndReturnVerifiedModule(kModuleString));
+  CopyInsertion copy_insertion(nullptr,
+                               /*use_region_based_live_range_analysis=*/-1);
+
+  ASSERT_IS_OK(copy_insertion.Run(module.get()).status());
+  VLOG(2) << module->ToString();
+
+  // All async start/end will be ordered so that all copies, except for an extra
+  // use of the send operand, are removable. Additionally, there will be 2
+  // copies leading into the loop and returning copying the result.
+  HloComputation* while_body =
+      hlo_query::FindComputation(module.get(), "while_body");
+  EXPECT_EQ(CountCopies(*module), 3);
+  EXPECT_EQ(CountCopies(*while_body), 1);
+
+  // Expect control dependency from send-done to send.
+  HloInstruction* send_done =
+      hlo_query::FindInstruction(while_body, HloOpcode::kSendDone);
+  HloInstruction* send =
+      hlo_query::FindInstruction(while_body, HloOpcode::kSend);
+  HloInstruction* send_operand_copy =
+      hlo_query::FindInstruction(while_body, HloOpcode::kCopy);
+  EXPECT_THAT(send, op::Send(send_operand_copy, op::AfterAll()));
+  EXPECT_THAT(send_operand_copy->control_predecessors(),
+              UnorderedElementsAre(send_done));
+}
+
+TEST_F(CopyInsertionTest, PartiallyPipelinedAsyncSendRecvPipelineParallelism) {
+  constexpr absl::string_view kModuleString = R"(
+    HloModule test, entry_computation_layout={(f32[16]{0})->f32[16]{0}},
+        num_partitions=4
+
+    while_body {
+      param = ((f32[16]{0}, u32[], token[]), (f32[16]{0}, u32[], token[]),
+          f32[16]{0}, f32[16]{0}) parameter(0)
+
+      prev_fwd = f32[16]{0} get-tuple-element(param), index=3
+
+      prev_send = (f32[16]{0}, u32[], token[]) get-tuple-element(param), index=0
+      send_done = (f32[16]{0}, token[]) send-done(prev_send), channel_id=1
+      prev_recv = (f32[16]{0}, u32[], token[]) get-tuple-element(param), index=1
+      recv_done = (f32[16]{0}, token[]) recv-done(prev_recv), channel_id=2
+
+      fwd = f32[16]{0} get-tuple-element(recv_done), index=0
+
+      after_all = token[] after-all()
+      send = (f32[16]{0}, u32[], token[]) send(prev_fwd, after_all),
+          channel_id=1,
+          frontend_attributes={
+            _xla_send_send_source_target_pairs={{0,1},{1,2},{2,3}}}
+      recv = (f32[16]{0}, u32[], token[]) recv(after_all), channel_id=2,
+          frontend_attributes={
+            _xla_send_send_source_target_pairs={{0,1},{1,2},{2,3}}}
+
+      // Both, the data that was sent and the data that was received are live
+      // until the end of the while loop.
+      ROOT tuple = ((f32[16]{0}, u32[], token[]), (f32[16]{0}, u32[], token[]),
+          f32[16]{0}, f32[16]{0}) tuple(send, recv, prev_fwd, fwd)
+    }
+
+    // Infinite loop to keep IR small.
+    while_condition {
+      param = ((f32[16]{0}, u32[], token[]), (f32[16]{0}, u32[], token[]),
+          f32[16]{0}, f32[16]{0}) parameter(0)
+      ROOT infinite_loop = pred[] constant(true)
+    }
+
+    ENTRY main_spmd {
+      data = f32[16]{0} parameter(0)
+      after_all = token[] after-all()
+      recv = (f32[16]{0}, u32[], token[]) recv(after_all), channel_id=1,
+          frontend_attributes={
+            _xla_send_send_source_target_pairs={{0,1},{1,2},{2,3}}}
+      send = (f32[16]{0}, u32[], token[]) send(data, after_all), channel_id=2,
+          frontend_attributes={
+            _xla_send_send_source_target_pairs={{0,1},{1,2},{2,3}}}
+      init = ((f32[16]{0}, u32[], token[]), (f32[16]{0}, u32[], token[]),
+          f32[16]{0}, f32[16]{0}) tuple(send, recv, data, data)
+      while = ((f32[16]{0}, u32[], token[]), (f32[16]{0}, u32[], token[]),
+          f32[16]{0}, f32[16]{0}) while(init), condition=while_condition,
+          body=while_body
+      recv_ctx = (f32[16]{0}, u32[], token[]) get-tuple-element(while), index=0
+      recv_done = (f32[16]{0}, token[]) recv-done(recv_ctx), channel_id=1
+      send_ctx = (f32[16]{0}, u32[], token[]) get-tuple-element(while), index=0
+      send_done = (f32[16]{0}, token[]) send-done(send_ctx), channel_id=2
+      ROOT data_ = f32[16]{0} get-tuple-element(recv_done), index=0
+    }
+    )";
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<xla::HloModule> module,
+                          ParseAndReturnVerifiedModule(kModuleString));
+  CopyInsertion copy_insertion(nullptr,
+                               /*use_region_based_live_range_analysis=*/-1);
+
+  ASSERT_IS_OK(copy_insertion.Run(module.get()).status());
+  VLOG(2) << module->ToString();
+
+  // All async start/end will be ordered so that all copies but two are
+  // removable:
+  // - The copy for the extra use of the send operand.
+  // - The copy for the extra use of the recv result.
+  // The copy removal heuristic fails on removing one data copy, so the total
+  // number of copies in the while loop body is 3.
+  HloComputation* while_body =
+      hlo_query::FindComputation(module.get(), "while_body");
+  EXPECT_EQ(CountCopies(*module), 6);
+  EXPECT_EQ(CountCopies(*while_body), 3);
+
+  // Expect control dependency from send-done to send.
+  HloInstruction* send_done =
+      hlo_query::FindInstruction(while_body, HloOpcode::kSendDone);
+  HloInstruction* send =
+      hlo_query::FindInstruction(while_body, HloOpcode::kSend);
+  HloInstruction* send_operand_copy = send->mutable_operand(0);
+  EXPECT_THAT(send_operand_copy, op::Copy());
+  EXPECT_THAT(send, op::Send(send_operand_copy, op::AfterAll()));
+  EXPECT_THAT(send_operand_copy->control_predecessors(),
+              UnorderedElementsAre(send_done));
+
+  // Expect control dependency from recv-done to recv.
+  HloInstruction* recv_done =
+      hlo_query::FindInstruction(while_body, HloOpcode::kRecvDone);
+  HloInstruction* recv =
+      hlo_query::FindInstruction(while_body, HloOpcode::kRecv);
+  HloInstruction* recv_done_copy = *absl::c_find_if(
+      recv->control_predecessors(), HloPredicateIsOp<HloOpcode::kCopy>);
+  EXPECT_THAT(recv_done_copy, op::Copy(op::GetTupleElement(recv_done)));
+  EXPECT_THAT(recv->control_predecessors(),
+              UnorderedElementsAre(recv_done, recv_done_copy));
+}
+
+TEST_F(CopyInsertionTest,
+       PartiallyPipelinedAsyncSendRecvPipelineParallelismDirectFwd) {
+  constexpr absl::string_view kModuleString = R"(
+    HloModule test, num_partitions=4
+
+    while_body {
+      param = ((f32[16]{0}, u32[], token[]), (f32[16]{0}, u32[], token[]))
+          parameter(0)
+
+      send_ctx = (f32[16]{0}, u32[], token[]) get-tuple-element(param), index=0
+      recv_ctx = (f32[16]{0}, u32[], token[]) get-tuple-element(param), index=1
+      send_done = (f32[16]{0}, token[]) send-done(send_ctx), channel_id=1
+      recv_done = (f32[16]{0}, token[]) recv-done(recv_ctx), channel_id=2
+
+      data = f32[16]{0} get-tuple-element(recv_done), index=0
+
+      after_all = token[] after-all()
+      send_ctx_ = (f32[16]{0}, u32[], token[]) send(data, after_all),
+          channel_id=1,
+          frontend_attributes={
+            _xla_send_send_source_target_pairs={{0,1},{1,2},{2,3}}}
+      recv_ctx_ = (f32[16]{0}, u32[], token[]) recv(after_all), channel_id=2,
+          frontend_attributes={
+            _xla_send_send_source_target_pairs={{0,1},{1,2},{2,3}}}
+
+      ROOT tuple = ((f32[16]{0}, u32[], token[]), (f32[16]{0}, u32[], token[]))
+          tuple(send_ctx_, recv_ctx_)
+    }
+
+    // Infinite loop to keep IR small.
+    while_condition {
+      param = ((f32[16]{0}, u32[], token[]), (f32[16]{0}, u32[], token[]))
+          parameter(0)
+      ROOT infinite_loop = pred[] constant(true)
+    }
+
+    ENTRY main_spmd {
+      data = f32[16]{0} parameter(0)
+      after_all = token[] after-all()
+      send_ctx = (f32[16]{0}, u32[], token[]) send(data, after_all),
+          channel_id=2,
+          frontend_attributes={
+            _xla_send_send_source_target_pairs={{0,1},{1,2},{2,3}}}
+      recv_ctx = (f32[16]{0}, u32[], token[]) recv(after_all), channel_id=1,
+          frontend_attributes={
+            _xla_send_send_source_target_pairs={{0,1},{1,2},{2,3}}}
+      init = ((f32[16]{0}, u32[], token[]), (f32[16]{0}, u32[], token[]))
+          tuple(send_ctx, recv_ctx)
+      while = ((f32[16]{0}, u32[], token[]), (f32[16]{0}, u32[], token[]))
+          while(init), condition=while_condition, body=while_body
+      recv_ctx_ = (f32[16]{0}, u32[], token[]) get-tuple-element(while), index=0
+      recv_done = (f32[16]{0}, token[]) recv-done(recv_ctx_), channel_id=1
+      send_ctx_ = (f32[16]{0}, u32[], token[]) get-tuple-element(while), index=1
+      send_done = (f32[16]{0}, token[]) send-done(send_ctx_), channel_id=2
+      ROOT data_ = f32[16]{0} get-tuple-element(recv_done), index=0
+    }
+    )";
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<xla::HloModule> module,
+                          ParseAndReturnVerifiedModule(kModuleString));
+
+  CopyInsertion copy_insertion(nullptr,
+                               /*use_region_based_live_range_analysis=*/-1);
+  ASSERT_IS_OK(copy_insertion.Run(module.get()).status());
+  VLOG(2) << module->ToString();
+
+  // Expect that send and recv do not share the same buffer. Expect this to be
+  // enforced by a copy before starting to send.
+  HloComputation* while_body =
+      hlo_query::FindComputation(module.get(), "while_body");
+  EXPECT_EQ(CountCopies(*module), 2);
+  EXPECT_EQ(CountCopies(*while_body), 1);
+  HloInstruction* send =
+      hlo_query::FindInstruction(while_body, HloOpcode::kSend);
+  HloInstruction* recv_done =
+      hlo_query::FindInstruction(while_body, HloOpcode::kRecvDone);
+  EXPECT_THAT(
+      send, op::Send(op::Copy(op::GetTupleElement(recv_done)), op::AfterAll()));
 }
 
 }  // namespace

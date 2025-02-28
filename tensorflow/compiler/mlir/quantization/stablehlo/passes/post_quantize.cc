@@ -16,7 +16,7 @@ limitations under the License.
 #include <utility>
 
 #include "llvm/Support/Casting.h"
-#include "mlir/Dialect/Quant/QuantTypes.h"  // from @llvm-project
+#include "mlir/Dialect/Quant/IR/QuantTypes.h"  // from @llvm-project
 #include "mlir/IR/BuiltinAttributeInterfaces.h"  // from @llvm-project
 #include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
@@ -28,8 +28,8 @@ limitations under the License.
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"  // from @llvm-project
 #include "stablehlo/dialect/StablehloOps.h"  // from @stablehlo
 #include "tensorflow/compiler/mlir/lite/quantization/ir/QuantOps.h"
-#include "tensorflow/compiler/mlir/lite/quantization/quantization_utils.h"
 #include "tensorflow/compiler/mlir/lite/transforms/passes.h"
+#include "tensorflow/compiler/mlir/quantization/common/quantization_lib/quantization_utils.h"
 
 namespace mlir::quant::stablehlo {
 
@@ -67,7 +67,7 @@ class RemoveVolatileQdqPattern
       // If the quantize op is a requantize op, it is being used in other scale
       // adjustments and should be kept. Instead, move dequantize op before the
       // requantize op to remove the unnecessary requantize op.
-      if (auto qtype =
+      if (const QuantizedType qtype =
               QuantizedType::getQuantizedElementType(q.getArg().getType())) {
         rewriter.setInsertionPoint(op);
         rewriter.replaceOpWithNewOp<quantfork::DequantizeCastOp>(
@@ -93,7 +93,7 @@ class QuantizeConstPattern
                                 PatternRewriter& rewriter) const override {
     DenseFPElementsAttr attr;
     if (matchPattern(op.getOperand(), m_Constant(&attr))) {
-      auto qtype = op.getResult().getType();
+      const Type qtype = op.getResult().getType();
       ElementsAttr quantized_attr = Quantize(attr, qtype);
       if (quantized_attr) {
         rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
@@ -140,7 +140,7 @@ void PostQuantizePass::runOnOperation() {
   // TODO: b/307463853 - Consider splitting passes for each pattern set.
   patterns.add<FoldTrivalRequantizeOp<quantfork::QuantizeCastOp>,
                RemoveVolatileQdqPattern>(ctx);
-  if (failed(applyPatternsAndFoldGreedily(func, std::move(patterns)))) {
+  if (failed(applyPatternsGreedily(func, std::move(patterns)))) {
     signalPassFailure();
   }
 
@@ -148,7 +148,7 @@ void PostQuantizePass::runOnOperation() {
   patterns_2
       .add<QuantizeConstPattern, ConvertQuantizeCastToUniformQuantizePattern,
            ConvertDequantizeCastToUniformDequantizePattern>(ctx);
-  if (failed(applyPatternsAndFoldGreedily(func, std::move(patterns_2)))) {
+  if (failed(applyPatternsGreedily(func, std::move(patterns_2)))) {
     signalPassFailure();
   }
 }

@@ -14,12 +14,11 @@ limitations under the License.
 ==============================================================================*/
 
 #include <algorithm>
+#include <cassert>
 #include <memory>
-#include <string>
-#include <vector>
 
 #include "absl/container/flat_hash_map.h"
-#include "absl/container/flat_hash_set.h"
+#include "absl/log/log.h"
 #include "llvm/ADT/SmallVector.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
@@ -116,7 +115,8 @@ LogicalResult FillOpToParallelIdsMap(
     if (id_pairs.empty()) continue;
 
     TF::ParallelIdsMap& ids_map = op_to_parallel_ids_map[island];
-    for (auto [group_id, branch_id] : id_pairs) ids_map[group_id] = branch_id;
+    for (const auto& [group_id, branch_id] : id_pairs)
+      ids_map[group_id] = branch_id;
   }
   return success();
 }

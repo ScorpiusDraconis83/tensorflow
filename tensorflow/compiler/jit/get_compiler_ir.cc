@@ -25,6 +25,7 @@ limitations under the License.
 #include "absl/algorithm/container.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/ascii.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
@@ -38,6 +39,7 @@ limitations under the License.
 #include "tensorflow/compiler/tf2xla/xla_compiler.h"
 #include "xla/client/executable_build_options.h"
 #include "xla/client/local_client.h"
+#include "xla/hlo/translate/portable_api.h"
 #include "xla/service/hlo_graph_dumper.h"
 #include "xla/status_macros.h"
 #include "xla/stream_executor/host/host_platform_id.h"
@@ -58,7 +60,7 @@ limitations under the License.
 
 namespace tensorflow {
 
-static StatusOr<std::unique_ptr<xla::LocalExecutable>> BuildExecutable(
+static absl::StatusOr<std::unique_ptr<xla::LocalExecutable>> BuildExecutable(
     xla::LocalClient* local_client,
     const XlaCompiler::CompilationResult& result,
     const XlaCompiler::Options& options,
@@ -92,10 +94,12 @@ static StatusOr<std::unique_ptr<xla::LocalExecutable>> BuildExecutable(
   return std::move(executables[0]);
 }
 
-static StatusOr<std::string> BuildHLOString(
+static absl::StatusOr<std::string> BuildHLOString(
     IrExportStage stage, const XlaCompiler::CompilationResult& result,
     xla::LocalClient* local_client, const XlaCompiler::Options& options) {
   switch (stage) {
+    case IrExportStage::STABLEHLO:
+    case IrExportStage::STABLEHLO_SERIALIZED:
     case IrExportStage::HLO:
     case IrExportStage::HLO_NO_METADATA:
     case IrExportStage::HLO_SERIALIZED: {
@@ -106,16 +110,29 @@ static StatusOr<std::string> BuildHLOString(
           std::unique_ptr<xla::HloModule> new_module,
           xla::HloModule::CreateFromProto(result.computation->proto(), config));
 
+      if (stage == IrExportStage::STABLEHLO_SERIALIZED) {
+        TF_ASSIGN_OR_RETURN(
+            std::string stablehlo,
+            xla::ConvertHloToStablehlo(*new_module, /*emit_bytecode=*/true));
+        return stablehlo;
+      }
+      if (stage == IrExportStage::STABLEHLO) {
+        TF_ASSIGN_OR_RETURN(
+            std::string stablehlo,
+            xla::ConvertHloToStablehlo(*new_module, /*emit_bytecode=*/false));
+        return stablehlo;
+      }
+
       xla::HloPrintOptions opts;
+      opts.set_print_large_constants(false);
+      opts.set_print_operand_shape(true);
       if (stage == IrExportStage::HLO_NO_METADATA) {
         opts.set_print_metadata(false);
       }
-
       if (stage == IrExportStage::HLO_SERIALIZED) {
         return new_module->ToProto().SerializeAsString();
-      } else {
-        return new_module->ToString(opts);
       }
+      return new_module->ToString(opts);
     }
     case IrExportStage::OPTIMIZED_HLO:
     case IrExportStage::OPTIMIZED_HLO_SERIALIZED: {
@@ -137,7 +154,7 @@ static StatusOr<std::string> BuildHLOString(
     case IrExportStage::OPTIMIZED_HLO_DOT: {
       TF_ASSIGN_OR_RETURN(std::unique_ptr<xla::LocalExecutable> executable,
                           BuildExecutable(local_client, result, options));
-      StatusOr<std::string> graph = xla::RenderGraph(
+      absl::StatusOr<std::string> graph = xla::RenderGraph(
           *executable->executable()->module().entry_computation(),
           "Visualization",
           /*debug_options=*/{}, xla::RenderedGraphFormat::kDot,
@@ -148,7 +165,7 @@ static StatusOr<std::string> BuildHLOString(
   }
 }
 
-static StatusOr<std::vector<XlaCompiler::Argument>>
+static absl::StatusOr<std::vector<XlaCompiler::Argument>>
 BuildXlaCompilerArgumentFromTensorSpec(
     const FunctionBody* fbody, absl::Span<int const> must_be_constant_idxs,
     absl::Span<const Tensor* const> inputs,
@@ -222,7 +239,9 @@ absl::Status ValidateGetCompilerIrTfrtTpu(absl::string_view device_type,
   auto is_tfrt_tpu_supported_stage = [](IrExportStage stage) {
     return stage == IrExportStage::HLO ||
            stage == IrExportStage::HLO_NO_METADATA ||
-           stage == IrExportStage::HLO_SERIALIZED;
+           stage == IrExportStage::HLO_SERIALIZED ||
+           stage == IrExportStage::STABLEHLO ||
+           stage == IrExportStage::STABLEHLO_SERIALIZED;
   };
   // TODO(b/238830423): support GetCompilerIr on TFRT TPU device for stages
   // that requires compilation from HLO to executable.
@@ -327,7 +346,7 @@ absl::StatusOr<std::string> CompileAndBuildHLOString(
  *   - `input_handles`: Contains all concrete_fn inputs tensors, including
  * captured inputs.
  */
-StatusOr<std::string> GetCompilerIr(
+absl::StatusOr<std::string> GetCompilerIr(
     IrExportStage stage, ProcessFunctionLibraryRuntime* pflr,
     absl::string_view func_name, Device* dev, EagerContext* context,
     absl::Span<const ArgShapeAndDType> input_arg_shape_and_dtype,
@@ -356,12 +375,18 @@ StatusOr<std::string> GetCompilerIr(
                              compiler_arg_source));
 
   XlaPlatformInfo platform_info = XlaPlatformInfoFromDevice(dev);
+  auto compilation_device_type = platform_info.device_type();
+  if (platform_info.device_type() != DEVICE_TPU) {
+    TF_ASSIGN_OR_RETURN(compilation_device_type,
+                        GetCompilationDeviceType(platform_info.device_type()));
+  }
 
   XlaDeviceCompiler* xla_device_compiler;
   TF_RETURN_IF_ERROR(dev->resource_manager()->LookupOrCreate<XlaDeviceCompiler>(
       dev->resource_manager()->default_container(), "xla_device_compiler",
       &xla_device_compiler, [&](XlaDeviceCompiler** xla_device_compiler) {
         return BuildXlaDeviceCompiler(dev, flr, platform_info,
+                                      compilation_device_type,
                                       xla_device_compiler);
       }));
   core::ScopedUnref xla_device_compiler_ref(xla_device_compiler);
@@ -379,7 +404,7 @@ StatusOr<std::string> GetCompilerIr(
                                   function, args);
 }
 
-StatusOr<std::string> GetCompilerIr(
+absl::StatusOr<std::string> GetCompilerIr(
     IrExportStage stage, ProcessFunctionLibraryRuntime* pflr,
     absl::string_view func_name, absl::string_view platform_name,
     EagerContext* context,
@@ -419,17 +444,30 @@ StatusOr<std::string> GetCompilerIr(
                                 /*xla_device_metadata=*/nullptr,
                                 /*pjrt_device_metadata=*/nullptr,
                                 /*device_allocator=*/nullptr);
+  DeviceType compilation_device_type = platform_info.device_type();
+  if (platform_info.device_type() != DEVICE_TPU) {
+    TF_ASSIGN_OR_RETURN(compilation_device_type,
+                        GetCompilationDeviceType(platform_info.device_type()));
+  }
   XlaDeviceCompiler* xla_device_compiler;
-  // TODO(b/306753579): Cache the compiler.
-  TF_RETURN_IF_ERROR(BuildXlaDeviceCompiler(
-      /*dev=*/nullptr, flr, platform_info, &xla_device_compiler));
-  xla::LocalClient* local_client = xla_device_compiler->client();
+  const std::string xla_device_compiler_name = absl::StrCat(
+      absl::AsciiStrToLower(platform_name), "_xla_device_compiler");
+  TF_RETURN_IF_ERROR(
+      context->HostCPU()->resource_manager()->LookupOrCreate<XlaDeviceCompiler>(
+          context->HostCPU()->resource_manager()->default_container(),
+          xla_device_compiler_name, &xla_device_compiler,
+          [&](XlaDeviceCompiler** xla_device_compiler) {
+            return BuildXlaDeviceCompiler(/*dev=*/nullptr, flr, platform_info,
+                                          compilation_device_type,
+                                          xla_device_compiler);
+          }));
+  core::ScopedUnref xla_device_compiler_ref(xla_device_compiler);
+
   XlaCompiler::Options options;
   if (platform_info.device_type() == DEVICE_TPU) {
     options = GenerateCompilerOptionsForTfrtTpu(*xla_device_compiler, *flr);
   } else {
-    options.client = local_client;
-    options.device_type = xla_device_compiler->device_type();
+    options.device_type = compilation_device_type;
     options.flib_def = flr->GetFunctionLibraryDefinition();
     options.graph_def_version = flr->graph_def_version();
     options.allow_cpu_custom_calls =
@@ -437,7 +475,7 @@ StatusOr<std::string> GetCompilerIr(
     options.alias_passthrough_params = !platform_info.is_on_xla_device();
   }
 
-  return CompileAndBuildHLOString(stage, options, xla_device_compiler->client(),
+  return CompileAndBuildHLOString(stage, options, /*local_client=*/nullptr,
                                   function, args);
 }
 

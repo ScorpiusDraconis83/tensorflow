@@ -1,4 +1,4 @@
-/* Copyright 2015 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2015 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -83,43 +83,17 @@ limitations under the License.
 #include "absl/container/inlined_vector.h"
 #include "absl/meta/type_traits.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "xla/stream_executor/device_memory.h"
+#include "xla/stream_executor/kernel_spec.h"
 #include "xla/stream_executor/launch_dim.h"
+#include "xla/stream_executor/stream.h"
 #include "tsl/platform/logging.h"
-#include "tsl/platform/statusor.h"
 
 namespace stream_executor {
-
-class Kernel;
-class StreamExecutor;
-
-namespace internal {
-class KernelInterface;
-}  // namespace internal
-
-//===----------------------------------------------------------------------===//
-// Kernel cache config
-//===----------------------------------------------------------------------===//
-
-// This enum represents potential configurations of L1/shared memory when
-// running a particular kernel. These values represent user preference, and
-// the runtime is not required to respect these choices.
-enum class KernelCacheConfig {
-  // Indicates no preference for device L1/shared memory configuration.
-  kNoPreference,
-
-  // Indicates a preference for more shared memory than L1 cache.
-  kPreferShared,
-
-  // Indicates a preference for more L1 cache than shared memory.
-  kPreferL1,
-
-  // Indicates a preference for equal amounts of L1 cache and shared memory.
-  kPreferEqual,
-};
 
 //===----------------------------------------------------------------------===//
 // Kernel metadata
@@ -227,96 +201,140 @@ class Kernel {
   // registering custom CUDA C++ kernels with non-trivial C++ API with a
   // StreamExecutor as a generic `Kernel`.
   using KernelArgsPacking =
-      std::function<tsl::StatusOr<std::unique_ptr<KernelArgsPackedArrayBase>>(
+      std::function<absl::StatusOr<std::unique_ptr<KernelArgsPackedArrayBase>>(
           const Kernel &kernel, const KernelArgs &args)>;
 
-  Kernel(Kernel &&from);
-
-  // Constructs an "empty" (not-yet-loaded) kernel instance.
-  //
-  // parent is the StreamExecutor that will be responsible for loading the
-  // implementation of this kernel. It must not be null.
-  explicit Kernel(StreamExecutor *parent);
-
-  // Releases resources associated with the kernel instance (i.e.
-  // platform-specific implementation).
-  ~Kernel();
-
-  // Returns the number of parameters that this kernel accepts. (Arity refers to
-  // nullary, unary, ...).
-  unsigned Arity() const;
-
-  // Returns the StreamExecutor that represents the platform this kernel
-  // executes upon.
-  StreamExecutor *parent() const { return parent_; }
-
-  // Returns a const pointer to the (opaque) platform-dependent implementation.
-  const internal::KernelInterface *implementation() const {
-    return implementation_.get();
-  }
-
-  // Returns a non-const pointer to the (opaque) platform-dependent
-  // implementation.
-  internal::KernelInterface *implementation() { return implementation_.get(); }
-
-  void set_metadata(const KernelMetadata &metadata) { metadata_ = metadata; }
-
-  const KernelMetadata &metadata() const { return metadata_; }
-
-  // Sets the preferred cache configuration for a kernel. This is just a
-  // suggestion to the runtime, and may not be honored during execution.
-  void SetPreferredCacheConfig(KernelCacheConfig config);
-
-  // Gets the preferred cache configuration for a kernel.
-  KernelCacheConfig GetPreferredCacheConfig() const;
-
-  // Returns the maximum number of blocks (per multiprocessor) occupied by the
-  // kernel given the number of threads per block and shared memory size.
-  tsl::StatusOr<int32_t> GetMaxOccupiedBlocksPerCore(
-      ThreadDim threads, size_t dynamic_shared_memory_bytes) const;
-
-  // Sets custom kernels arguments packing function for a kernel.
-  void set_kernel_args_packing(KernelArgsPacking kernel_args_packing) {
-    kernel_args_packing_ = std::move(kernel_args_packing);
-  }
-
-  const KernelArgsPacking &kernel_args_packing() const {
-    return kernel_args_packing_;
-  }
-
-  void set_name(absl::string_view name);
-  const std::string &name() const { return name_; }
-  const std::string &demangled_name() const { return demangled_name_; }
-
- private:
-  // The StreamExecutor that loads this kernel object.
-  StreamExecutor *parent_;
-
-  // Implementation delegated to for platform-specific functionality.
-  std::unique_ptr<internal::KernelInterface> implementation_;
-
-  std::string name_;
-  std::string demangled_name_;
-
-  KernelMetadata metadata_;
-
-  KernelArgsPacking kernel_args_packing_;
+  Kernel() = default;
+  virtual ~Kernel() = default;
 
   Kernel(const Kernel &) = delete;
   void operator=(const Kernel &) = delete;
+
+  // Returns the number of parameters that this kernel accepts. (Arity refers to
+  // nullary, unary, ...).
+  virtual unsigned Arity() const = 0;
+
+  // Returns the maximum number of blocks (per multiprocessor) occupied by the
+  // kernel given the number of threads per block and shared memory size.
+  virtual absl::StatusOr<int32_t> GetMaxOccupiedBlocksPerCore(
+      ThreadDim threads, size_t dynamic_shared_memory_bytes) const = 0;
+
+  const KernelMetadata &metadata() const { return metadata_; }
+  void set_metadata(KernelMetadata metadata) {
+    metadata_ = std::move(metadata);
+  }
+
+  const KernelArgsPacking &args_packing() const { return args_packing_; }
+  void set_args_packing(KernelArgsPacking args_packing) {
+    args_packing_ = std::move(args_packing);
+  }
+
+  absl::string_view name() const { return name_; }
+  void set_name(absl::string_view name);
+
+  // Launches a data parallel kernel with the given thread/block
+  // dimensionality and already-packed args/sizes to pass to the underlying
+  // platform driver.
+  absl::Status Launch(const ThreadDim &thread_dims, const BlockDim &block_dims,
+                      Stream *stream, const KernelArgs &args);
+
+  // Launches a data parallel kernel with the given thread/block
+  // dimensionality and already-packed args/sizes to pass to the underlying
+  // platform driver.
+  absl::Status Launch(const ThreadDim &thread_dims, const BlockDim &block_dims,
+                      const ClusterDim &cluster_dims, Stream *stream,
+                      const KernelArgs &args);
+
+ private:
+  // Helper method to launch a kernel with optional cluster dimensions.
+  virtual absl::Status Launch(const ThreadDim &thread_dims,
+                              const BlockDim &block_dims,
+                              const std::optional<ClusterDim> &cluster_dims,
+                              Stream *stream, const KernelArgs &args) = 0;
+
+  std::string name_;
+
+  KernelMetadata metadata_;
+  KernelArgsPacking args_packing_;
 };
+
+inline absl::Status Kernel::Launch(const ThreadDim &thread_dims,
+                                   const BlockDim &block_dims, Stream *stream,
+                                   const KernelArgs &args) {
+  return Launch(thread_dims, block_dims, std::nullopt, stream, args);
+}
+inline absl::Status Kernel::Launch(const ThreadDim &thread_dims,
+                                   const BlockDim &block_dims,
+                                   const ClusterDim &cluster_dims,
+                                   Stream *stream, const KernelArgs &args) {
+  return Launch(thread_dims, block_dims, std::make_optional(cluster_dims),
+                stream, args);
+}
 
 //===----------------------------------------------------------------------===//
 // Typed kernel
 //===----------------------------------------------------------------------===//
-
-// Typed variant of Kernel, like a typed device function pointer.
 template <typename... Params>
-class TypedKernel : public Kernel {
+class TypedKernelFactory;
+
+// Typed kernel is a typed smart-pointer-like wrapper around untyped Kernel.
+template <typename... Params>
+class TypedKernel {
  public:
   static constexpr size_t kNumberOfParameters = sizeof...(Params);
 
-  explicit TypedKernel(StreamExecutor *parent) : Kernel(parent) {}
+  TypedKernel() = default;
+
+  Kernel &operator*() { return *kernel_; }
+  const Kernel &operator*() const { return *kernel_; }
+
+  Kernel *operator->() { return kernel_.get(); }
+  const Kernel *operator->() const { return kernel_.get(); }
+
+  operator bool() const { return static_cast<bool>(kernel_); }  // NOLINT
+
+  // Type of factory used to create a TypedKernel.
+  using FactoryType = TypedKernelFactory<Params...>;
+
+  // Launches a kernel with the given (variadic) parameters for the invocation
+  // onto the specified stream. These arguments can be things
+  // like DeviceMemory or primitive types such as int. What arguments you may
+  // pass to a given kernel are noted as the template parameters to the
+  // TypedKernel type that the compiler generates.
+  //
+  //  Template parameters:
+  //   Params...   The type list of formal parameters that the typed kernel
+  //               expects, which is matched against Args...
+  //   Args...     The deduced type list for passed actual arguments
+  //
+  // Implementation: A compile-time compatibility check is performed that has
+  // some leniency versus an exact parameter pack match -- for example,
+  // `const DeviceMemory<T>` is considered "pack compatible" with a
+  // `const DeviceMemory<T>&` formal parameter; in part, because we don't have
+  // perfect forwarding support without rvalue references. It also attempts to
+  // spit out helpful static_assert error traces with information as to the
+  // argument number and types that were mismatched.
+  template <typename... Args>
+  inline absl::Status Launch(ThreadDim thread_dims, BlockDim block_dims,
+                             Stream *stream, Args... args) {
+    auto kernel_args = PackKernelArgs(*this, args...);
+    return kernel_->Launch(thread_dims, block_dims, stream, *kernel_args);
+  }
+
+  template <typename... Args>
+  inline absl::Status Launch(ThreadDim thread_dims, BlockDim block_dims,
+                             int32_t shmem_bytes, Stream *stream,
+                             Args... args) {
+    auto kernel_args = PackKernelArgs(shmem_bytes, args...);
+    return kernel_->Launch(thread_dims, block_dims, stream, *kernel_args);
+  }
+
+ private:
+  friend class TypedKernelFactory<Params...>;
+  explicit TypedKernel(std::unique_ptr<Kernel> kernel)
+      : kernel_(std::move(kernel)) {}
+
+  std::unique_ptr<Kernel> kernel_;
 };
 
 //===----------------------------------------------------------------------===//
@@ -527,8 +545,9 @@ std::unique_ptr<KernelArgsPackedArrayBase> PackKernelArgs(
 }
 }  // namespace internal
 
-inline tsl::StatusOr<std::unique_ptr<KernelArgsPackedArrayBase>> PackKernelArgs(
-    absl::Span<const DeviceMemoryBase> args, uint32_t shared_mem_bytes) {
+inline absl::StatusOr<std::unique_ptr<KernelArgsPackedArrayBase>>
+PackKernelArgs(absl::Span<const DeviceMemoryBase> args,
+               uint32_t shared_mem_bytes) {
   static constexpr int kKernelArgsLimit = 1024;
 
   if (args.size() > kKernelArgsLimit)
@@ -558,8 +577,9 @@ inline tsl::StatusOr<std::unique_ptr<KernelArgsPackedArrayBase>> PackKernelArgs(
   return internal::PackKernelArgs<kKernelArgsLimit>(args, shared_mem_bytes);
 }
 
-inline tsl::StatusOr<std::unique_ptr<KernelArgsPackedArrayBase>> PackKernelArgs(
-    absl::Span<const DeviceMemoryBase> args, const KernelMetadata &metadata) {
+inline absl::StatusOr<std::unique_ptr<KernelArgsPackedArrayBase>>
+PackKernelArgs(absl::Span<const DeviceMemoryBase> args,
+               const KernelMetadata &metadata) {
   return PackKernelArgs(args, metadata.shared_memory_bytes().value_or(0));
 }
 
@@ -718,7 +738,7 @@ std::unique_ptr<KernelArgsPackedArrayBase> PackKernelArgs(
 
   PackedParams::template CheckCompatibleStaticAssert<Args...>();
 
-  int64_t shmem_bytes = kernel.metadata().shared_memory_bytes().value_or(0);
+  int64_t shmem_bytes = kernel->metadata().shared_memory_bytes().value_or(0);
   return std::make_unique<PackedArgs>(std::forward<Args>(args)..., shmem_bytes);
 }
 

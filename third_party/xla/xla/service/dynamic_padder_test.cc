@@ -1,4 +1,4 @@
-/* Copyright 2019 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2019 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,45 +22,41 @@ limitations under the License.
 
 #include "absl/log/check.h"
 #include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_replace.h"
 #include "absl/types/span.h"
-#include "xla/client/xla_builder.h"
 #include "xla/error_spec.h"
+#include "xla/hlo/builder/xla_builder.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/hlo/parser/hlo_parser.h"
+#include "xla/hlo/transforms/simplifiers/algebraic_simplifier.h"
+#include "xla/hlo/transforms/simplifiers/dynamic_dimension_simplifier.h"
+#include "xla/hlo/transforms/simplifiers/hlo_dce.h"
+#include "xla/hlo/transforms/simplifiers/tuple_simplifier.h"
 #include "xla/hlo/utils/hlo_matchers.h"
 #include "xla/literal.h"
 #include "xla/literal_util.h"
-#include "xla/service/algebraic_simplifier.h"
 #include "xla/service/dynamic_dimension_inference.h"
-#include "xla/service/dynamic_dimension_simplifier.h"
-#include "xla/service/hlo_dce.h"
-#include "xla/service/hlo_parser.h"
 #include "xla/service/pattern_matcher.h"
 #include "xla/service/pattern_matcher_gmock.h"
-#include "xla/service/tuple_simplifier.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
-#include "xla/status.h"
-#include "xla/status_macros.h"
-#include "xla/statusor.h"
 #include "xla/test.h"
 #include "xla/test_helpers.h"
-#include "xla/tests/client_library_test_base.h"
 #include "xla/tests/hlo_test_base.h"
-#include "xla/tests/literal_test_util.h"
 #include "xla/tests/llvm_irgen_test_base.h"
 #include "xla/tests/test_macros.h"
+#include "xla/tsl/lib/core/status_test_util.h"
+#include "xla/tsl/protobuf/error_codes.pb.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/lib/core/status_test_util.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/status.h"
 #include "tsl/platform/statusor.h"
-#include "tsl/platform/test_benchmark.h"
-#include "tsl/protobuf/error_codes.pb.h"
 
 namespace xla {
 namespace {
@@ -78,7 +74,7 @@ OpDynamismSupport OpHasDynamismSupport(HloInstruction* hlo) {
   return OpDynamismSupport::kNoSupport;
 }
 
-Status CustomCallDynamicDimensionInference(
+bool CustomCallDynamicDimensionInference(
     HloInstruction* hlo, DynamicDimensionInference* inferencer) {
   if (hlo->custom_call_target() == "OpWithDynamicLowering") {
     if (hlo->shape().IsTuple()) {
@@ -86,15 +82,17 @@ Status CustomCallDynamicDimensionInference(
       HloInstruction* dynamic_size =
           inferencer->GetDynamicSize(hlo->mutable_operand(0), {1}, 0);
       inferencer->SetDynamicSize(hlo, {1}, 0, dynamic_size);
+      return true;
     } else {
       // Use the operand's dynamic size as output dynamic size.
       HloInstruction* dynamic_size =
           inferencer->GetDynamicSize(hlo->mutable_operand(0), {}, 0);
       inferencer->SetDynamicSize(hlo, {}, 0, dynamic_size);
+      return true;
     }
   }
 
-  return OkStatus();
+  return false;
 }
 
 class DynamicPadderTest : public HloTestBase {
@@ -107,7 +105,7 @@ class DynamicPadderTest : public HloTestBase {
     return module;
   }
 
-  StatusOr<bool> RunPadder(
+  absl::StatusOr<bool> RunPadder(
       bool slice_dynamic_output = false,
       OpSupportsDynamismHandler op_supports_dynamism_handler =
           OpHasDynamismSupport,
@@ -351,7 +349,7 @@ ENTRY main {
 
   TF_ASSERT_OK(RunPadder(/*slice_dynamic_output=*/true).status());
   TF_ASSERT_OK(TupleSimplifier().Run(module_.get()).status());
-  XLA_LOG_LINES(0, module_->ToString());
+  XLA_LOG_LINES(INFO, module_->ToString());
 
   auto* root = module_->entry_computation()->root_instruction();
   EXPECT_THAT(root, op::Tuple(op::Constant(), op::Tuple()));
@@ -587,7 +585,7 @@ ENTRY main {
   module_ = GetHloModule(hlo_text);
 
   TF_ASSERT_OK(RunPadder(/*slice_dynamic_output=*/true).status());
-  XLA_LOG_LINES(0, module_->ToString());
+  XLA_LOG_LINES(INFO, module_->ToString());
   auto* root = module_->entry_computation()->root_instruction();
   EXPECT_EQ(root->shape(), ShapeUtil::MakeShape(F32, {32, 216}, {true, false}));
   // Find the while loop and ensure that the dynamic dimension size was added to
@@ -689,7 +687,7 @@ ENTRY main {
   };
   auto custom_call_handler = [](HloInstruction* hlo,
                                 DynamicDimensionInference* inference) {
-    return OkStatus();
+    return false;
   };
   TF_ASSERT_OK(
       RunPadder(
@@ -697,7 +695,7 @@ ENTRY main {
           /*op_supports_dynamism_handler=*/std::move(op_supports_dynamism),
           /*custom_call_handler=*/std::move(custom_call_handler))
           .status());
-  XLA_LOG_LINES(1, module_->ToString());
+  XLA_VLOG_LINES(1, module_->ToString());
 
   for (HloComputation* computation : module_->computations()) {
     for (HloInstruction* instruction : computation->instructions()) {
@@ -751,9 +749,9 @@ class ExecutionTest : public HloTestBase {
         ParseAndReturnVerifiedModule(hlo_text).value();
     return module;
   }
-  Literal PadAndExecute(std::unique_ptr<HloModule> module,
-                        absl::Span<Literal* const> arguments,
-                        bool slice_dynamic_output = true) {
+  absl::StatusOr<Literal> PadAndExecute(std::unique_ptr<HloModule> module,
+                                        absl::Span<Literal* const> arguments,
+                                        bool slice_dynamic_output = true) {
     if (!slice_dynamic_output) {
       auto new_config = module->config();
       new_config.mutable_entry_computation_layout()
@@ -767,7 +765,7 @@ class ExecutionTest : public HloTestBase {
     TF_CHECK_OK(padder.Run(module.get()).status());
     HloDCE dce;
     TF_CHECK_OK(dce.Run(module.get()).status());
-    return ExecuteAndTransfer(std::move(module), arguments);
+    return Execute(std::move(module), {arguments});
   }
 };
 
@@ -823,9 +821,10 @@ ENTRY main {
       {{10, 20, 30}, {70, 80, 90}, {30, 22, 11}, {-1, 20, -1}});
   DynamicPadder padder;
   TF_CHECK_OK(padder.Run(module_padded.get()).status());
-  Literal padded = PadAndExecute(
-      std::move(module_padded),
-      {&operand, &scatter_indices_padded, &updates_padded, &dynamic_size});
+  TF_ASSERT_OK_AND_ASSIGN(Literal padded,
+                          PadAndExecute(std::move(module_padded),
+                                        {&operand, &scatter_indices_padded,
+                                         &updates_padded, &dynamic_size}));
 
   EXPECT_EQ(padded, not_padded);
 }
@@ -864,8 +863,10 @@ ENTRY main {
   Literal updates =
       LiteralUtil::CreateR3<int32_t>({{{10}, {20}, {30}}, {{70}, {80}, {90}}});
 
-  Literal padded = PadAndExecute(std::move(hlo_module),
-                                 {&operand, &scatter_indices, &updates}, false);
+  TF_ASSERT_OK_AND_ASSIGN(
+      Literal padded,
+      PadAndExecute(std::move(hlo_module),
+                    {&operand, &scatter_indices, &updates}, false));
   Literal expected =
       LiteralUtil::CreateR3<int32_t>({{{10, 20, 30}, {70, 80, 90}}});
   EXPECT_EQ(padded, expected);
@@ -912,9 +913,10 @@ ENTRY main {
   auto module_padded = GetHloModule(hlo_text);
   DynamicPadder padder;
   TF_CHECK_OK(padder.Run(module_padded.get()).status());
-  Literal not_padded =
+  TF_ASSERT_OK_AND_ASSIGN(
+      Literal not_padded,
       PadAndExecute(std::move(module_padded),
-                    {&operand, &scatter_indices, &updates, &dynamic_size});
+                    {&operand, &scatter_indices, &updates, &dynamic_size}));
   // Although we have two indices, only the first element is updated because of
   // padding.
   EXPECT_EQ(LiteralUtil::CreateR2<float>(
@@ -967,7 +969,8 @@ ENTRY main {
   auto module = GetHloModule(hlo_text);
   DynamicPadder padder;
   TF_CHECK_OK(padder.Run(module.get()).status());
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   // Only first element will be reduced.
   Literal expected = LiteralUtil::CreateR0<int32_t>(3);
@@ -1017,8 +1020,9 @@ ENTRY main {
       {{1, 2, 3, 4}, {4, 5, 6, 7}, {1, 2, 3, 4}, {4, 5, 6, 7}});
   DynamicPadder padder;
   TF_CHECK_OK(padder.Run(module_padded.get()).status());
-  Literal padded =
-      PadAndExecute(std::move(module_padded), {&operand_padded, &dynamic_size});
+  TF_ASSERT_OK_AND_ASSIGN(Literal padded,
+                          PadAndExecute(std::move(module_padded),
+                                        {&operand_padded, &dynamic_size}));
 
   EXPECT_EQ(padded, not_padded);
 }
@@ -1049,7 +1053,8 @@ ENTRY main {
   Literal operand = LiteralUtil::CreateR1<int32_t>({1, 2, 3, 4, 5});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   // only first 3 elements will be reduced.
   Literal expected = LiteralUtil::CreateR0<int32_t>(6);
@@ -1084,8 +1089,10 @@ ENTRY main {
       LiteralUtil::CreateR1<int32_t>({6, 7, -1});  // Dynamic operand.
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module),
-                                 {&operand_0, &operand_1, &operand_2}, false);
+  TF_ASSERT_OK_AND_ASSIGN(
+      Literal result,
+      PadAndExecute(std::move(module), {&operand_0, &operand_1, &operand_2},
+                    false));
   result.SetDynamicSize(0, 7);
   Literal expected = LiteralUtil::CreateR1<int32_t>({1, 2, 3, 4, 5, 6, 7});
 
@@ -1111,7 +1118,8 @@ ENTRY main {
       LiteralUtil::CreateR1<int32_t>({1, 2, -1});  // Dynamic operand.
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand_0}, false);
+  TF_ASSERT_OK_AND_ASSIGN(
+      Literal result, PadAndExecute(std::move(module), {&operand_0}, false));
   result.SetDynamicSize(0, 2);
   Literal expected = LiteralUtil::CreateR1<int32_t>({2, 1});
 
@@ -1139,7 +1147,8 @@ ENTRY main {
       {{1, 2, -1}, {3, 4, -1}, {-1, -1, -1}});  // Dynamic operand.
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand_0}, false);
+  TF_ASSERT_OK_AND_ASSIGN(
+      Literal result, PadAndExecute(std::move(module), {&operand_0}, false));
   result.SetDynamicSize(0, 2);
   result.SetDynamicSize(1, 2);
   Literal expected = LiteralUtil::CreateR2<int32_t>({{4, 3}, {2, 1}});
@@ -1172,7 +1181,8 @@ ENTRY main {
   Literal operand = LiteralUtil::CreateR1<int32_t>({1, 2, 3, 4, 5});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   // only first 3 elements will be reduced.
   Literal expected = LiteralUtil::CreateR0<int32_t>(6);
@@ -1207,7 +1217,8 @@ ENTRY main {
       {{{{1}, {2}, {3}, {4}, {5}}, {{2}, {4}, {6}, {7}, {8}}}});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   // Only the first 6 elements will be reduced.
   Literal expected = LiteralUtil::CreateR0<int32_t>(18);
@@ -1232,7 +1243,8 @@ ENTRY main {
   Literal operand = LiteralUtil::CreateR1<int32_t>({0, 1, 2, 3, 4});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   Literal expected = LiteralUtil::CreateR1<int32_t>({0});
 
@@ -1267,7 +1279,8 @@ ENTRY main {
       LiteralUtil::CreateR1<int32_t>({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   // After padding and reshape we have
   //
@@ -1314,7 +1327,8 @@ ENTRY main {
       {{0, 1, 2, 3, 4, 5}, {6, 7, 8, 9, 10, 11}});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   // After padding and reshape we have
   //
@@ -1359,7 +1373,8 @@ ENTRY main {
       {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {8, 9}, {10, 11}});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   // After padding and reshape we have
   //
@@ -1399,7 +1414,8 @@ ENTRY main {
   Literal operand = LiteralUtil::CreateR3<float>({{{1, 2, 3, 4, 5}}});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   Literal expected = LiteralUtil::CreateR3<float>({{{15}}});
 
@@ -1459,7 +1475,8 @@ ENTRY main {
       {{{{1}, {2}, {3}, {4}, {5}}, {{2}, {4}, {6}, {7}, {8}}}});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   Literal expected = LiteralUtil::CreateR1<int32_t>({6, 12});
 
@@ -1495,7 +1512,8 @@ ENTRY main {
       {{{{1}, {2}, {3}, {4}, {5}}, {{2}, {4}, {6}, {7}, {8}}}});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   Literal expected = LiteralUtil::CreateR0<int32_t>(0);
 
@@ -1547,7 +1565,8 @@ ENTRY main {
                                                     {{-1, -1}, {-1, -1}}});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   // Reshaping (with correct reshape rewriting) produces:
   // [[[0, 1, -1, -1], [-1, -1, -1, -1]], [[2, 3, -1, -1], [-1, -1, -1, -1]]]
@@ -1601,7 +1620,8 @@ ENTRY main {
         {-1, -1, -1, -1},
         {-1, -1, -1, -1}}});
   auto module = GetHloModule(hlo_text);
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   // Reshaping (with correct reshape rewriting) produces:
   // [[[1, 2], [3, 4], [5, 6], [7, 8], [9, 10], [11, 12], [13, 14], [15, 16]],
@@ -1685,7 +1705,7 @@ ENTRY entry {
 
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result, PadAndExecute(std::move(module), {}));
 
   // Stack has three valid items in it:
   // [[0, 0],
@@ -1729,7 +1749,7 @@ ENTRY entry {
 
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result, PadAndExecute(std::move(module), {}));
 
   // Array has two valid items in it:
   // [[3, 3],
@@ -1770,7 +1790,7 @@ ENTRY entry {
 
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result, PadAndExecute(std::move(module), {}));
 
   // Array has two valid items in it:
   // [[3, 3],
@@ -1840,7 +1860,7 @@ ENTRY entry {
 
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result, PadAndExecute(std::move(module), {}));
 
   // Stack has two valid items in it:
   // [[1, 1],
@@ -1883,7 +1903,8 @@ ENTRY main {
       {{{0, 1, 2}, {3, 4, 5}, {6, 7, 8}}, {{0, 1, 2}, {3, 4, 5}, {6, 7, 8}}});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   // Padded data looks like this (P is padding which is ignored).
   // [[0, 1, P]
@@ -1925,7 +1946,8 @@ ENTRY main {
       {{{0, 1, 2}, {3, 4, 5}, {6, 7, 8}}, {{0, 1, 2}, {3, 4, 5}, {6, 7, 8}}});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand}, false);
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}, false));
   result.SetDynamicSize(0, 8);
   // Padded data looks like this (P is padding which is ignored).
   // [[0, 1, P]
@@ -1961,7 +1983,8 @@ ENTRY main {
 
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand}, false);
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}, false));
   VLOG(1) << " result: " << result.ToString();
   result.SetDynamicSize(1, 2);
   result.SetDynamicSize(2, 2);
@@ -2009,7 +2032,8 @@ ENTRY main {
 
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand}, false);
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}, false));
   result.SetDynamicSize(0, 3);
   result.SetDynamicSize(1, 6);
   Literal expected = LiteralUtil::CreateR2<int32_t>(
@@ -2035,7 +2059,8 @@ ENTRY main {
   Literal operand = LiteralUtil::CreateR1<int32_t>({1, 2, 3});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   // Should return the size 2 instead of 3.
   Literal expected = LiteralUtil::CreateR0<int32_t>(2);
@@ -2072,8 +2097,9 @@ ENTRY main {
   Literal operand = LiteralUtil::CreateR1<int32_t>({1, 4, 3, 2});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand},
-                                 /*slice_dynamic_output=*/false);
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand},
+                                        /*slice_dynamic_output=*/false));
   Literal expected = LiteralUtil::CreateR1<int32_t>({4, 3, 1, 2});
 
   EXPECT_EQ(result, expected);
@@ -2111,8 +2137,9 @@ ENTRY main {
   // After padding head and tail with "2", the effective data will be [2, 1, 4,
   // 3, 2]
 
-  Literal result = PadAndExecute(std::move(module), {&operand},
-                                 /*slice_dynamic_output=*/false);
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand},
+                                        /*slice_dynamic_output=*/false));
   Literal expected = LiteralUtil::CreateR0<int32_t>(12);
 
   EXPECT_EQ(result, expected);
@@ -2150,8 +2177,9 @@ ENTRY main {
 
   // After interior padding with "2", the effective data will be
   // [1, 2, 4, 2, 3]
-  Literal result = PadAndExecute(std::move(module), {&operand},
-                                 /*slice_dynamic_output=*/false);
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand},
+                                        /*slice_dynamic_output=*/false));
   Literal expected = LiteralUtil::CreateR0<int32_t>(12);
 
   EXPECT_EQ(result, expected);
@@ -2200,8 +2228,9 @@ ENTRY entry {
   Literal operand = LiteralUtil::CreateR2<int32_t>({{0, 1}, {2, 3}, {4, 5}});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand},
-                                 /*slice_dynamic_output=*/false);
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand},
+                                        /*slice_dynamic_output=*/false));
   Literal expected = LiteralUtil::CreateR1<int32_t>({4, 8});
 
   EXPECT_EQ(result, expected);
@@ -2241,8 +2270,9 @@ ENTRY main {
   Literal operand = LiteralUtil::CreateR1<int32_t>({0, 4, 2});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand},
-                                 /*slice_dynamic_output=*/false);
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand},
+                                        /*slice_dynamic_output=*/false));
   Literal expected = LiteralUtil::CreateR1<int32_t>({4, 0, 2});
 
   EXPECT_EQ(result, expected);
@@ -2360,6 +2390,23 @@ ENTRY gds {
   DynamicPadder pass(options);
   auto status = pass.Run(module.get()).status();
   EXPECT_TRUE(status.ok());
+}
+
+TEST_F(DynamicPadderTest, ShardingDynamicShapes) {
+  constexpr absl::string_view hlo = R"(
+HloModule main
+
+ENTRY main {
+  token.0 = after-all()
+  infeed_tuple.0 = (s32[<=32], token[]) infeed(token.0), sharding={{manual}, {manual}}
+  infeed.0 = get-tuple-element(infeed_tuple.0), index=0
+  ROOT sharding.0 = s32[<=32] custom-call(infeed.0), custom_call_target="Sharding", sharding={manual}
+}
+)";
+  TF_ASSERT_OK_AND_ASSIGN(module_, ParseAndReturnVerifiedModule(hlo));
+  TF_ASSERT_OK_AND_ASSIGN(bool changed,
+                          RunPadder(/*slice_dynamic_output=*/true));
+  EXPECT_FALSE(changed);
 }
 
 }  // namespace

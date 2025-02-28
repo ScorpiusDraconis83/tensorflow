@@ -36,7 +36,7 @@ namespace tensorflow {
 namespace {
 
 template <typename VALUE_TYPE>
-Status UnbatchDenseZerothDim(
+absl::Status UnbatchDenseZerothDim(
     const RaggedTensorVariant& batched_ragged,
     std::vector<RaggedTensorVariant>* ragged_components) {
   Tensor batched_values = batched_ragged.values();
@@ -61,11 +61,11 @@ Status UnbatchDenseZerothDim(
     }
   }
 
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 template <typename VALUE_TYPE, typename SPLIT_TYPE>
-Status UnbatchRaggedZerothDim(
+absl::Status UnbatchRaggedZerothDim(
     const RaggedTensorVariant& batched_ragged,
     std::vector<RaggedTensorVariant>* ragged_components) {
   // Set up the component Ragged Tensors.
@@ -110,7 +110,7 @@ Status UnbatchRaggedZerothDim(
             batched_flat(j + start * num_inner_elems);
       }
     }
-    return OkStatus();
+    return absl::OkStatus();
   }
 
   // Unbatch nested splits.
@@ -166,7 +166,7 @@ Status UnbatchRaggedZerothDim(
     }
   }
 
-  return OkStatus();
+  return absl::OkStatus();
 }
 }  // namespace
 

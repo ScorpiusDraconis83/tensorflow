@@ -1,4 +1,4 @@
-/* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2023 The OpenXLA Authors.
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
@@ -13,14 +13,14 @@ limitations under the License.
 ==============================================================================*/
 #ifndef XLA_SERVICE_CPU_ONEDNN_OPS_REWRITER_H_
 #define XLA_SERVICE_CPU_ONEDNN_OPS_REWRITER_H_
-#if defined(INTEL_MKL) && defined(ENABLE_ONEDNN_V3)
+#if defined(INTEL_MKL)
 
 #include <optional>
 
 #include "absl/algorithm/container.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_module.h"
-#include "xla/service/hlo_pass_interface.h"
+#include "xla/hlo/pass/hlo_pass_interface.h"
 
 namespace xla {
 namespace cpu {
@@ -32,7 +32,7 @@ class OneDnnOpsRewriter : public HloModulePass {
   absl::string_view name() const override { return "onednn-ops-rewriter"; }
 
   using HloPassInterface::Run;
-  StatusOr<bool> Run(
+  absl::StatusOr<bool> Run(
       HloModule* module,
       const absl::flat_hash_set<absl::string_view>& execution_threads) override;
 };
@@ -40,5 +40,5 @@ class OneDnnOpsRewriter : public HloModulePass {
 }  // namespace cpu
 }  // namespace xla
 
-#endif  // INTEL_MKL && ENABLE_ONEDNN_V3
+#endif  // INTEL_MKL
 #endif  // XLA_SERVICE_CPU_ONEDNN_OPS_REWRITER_H_

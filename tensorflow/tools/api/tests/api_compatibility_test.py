@@ -96,15 +96,9 @@ _TEST_README_FILE = resource_loader.get_path_to_datafile('README.txt')
 _UPDATE_WARNING_FILE = resource_loader.get_path_to_datafile(
     'API_UPDATE_WARNING.txt')
 
-_NON_CORE_PACKAGES = ['estimator', 'keras']
+_NON_CORE_PACKAGES = ['keras']
 _V1_APIS_FROM_KERAS = ['layers', 'nn.rnn_cell']
 _V2_APIS_FROM_KERAS = ['initializers', 'losses', 'metrics', 'optimizers']
-
-# TODO(annarev): remove this once we test with newer version of
-# estimator that actually has compat v1 version.
-if not hasattr(tf.compat.v1, 'estimator'):
-  tf.compat.v1.estimator = tf.estimator
-  tf.compat.v2.estimator = tf.estimator
 
 
 def _KeyToFilePath(key, api_version):
@@ -204,6 +198,8 @@ def _FilterGoldenProtoDict(golden_proto_dict, omit_golden_symbols_map):
     elif api_object.HasField('tf_class'):
       module_or_class = api_object.tf_class
     if module_or_class is not None:
+      if 'is_instance' in symbol_list:
+        del module_or_class.is_instance[:]
       for members in (module_or_class.member, module_or_class.member_method):
         filtered_members = [m for m in members if m.name not in symbol_list]
         # Two steps because protobuf repeated fields disallow slice assignment.
@@ -410,6 +406,7 @@ class ApiCompatibilityTest(test.TestCase):
     }
     golden_proto_dict = _FilterGoldenProtoDict(golden_proto_dict,
                                                omit_golden_symbols_map)
+    proto_dict = _FilterGoldenProtoDict(proto_dict, omit_golden_symbols_map)
 
     # Diff them. Do not fail if called with update.
     # If the test is run to update goldens, only report diffs but do not fail.
@@ -435,6 +432,9 @@ class ApiCompatibilityTest(test.TestCase):
       omit_golden_symbols_map['tensorflow.summary'] = [
           'audio', 'histogram', 'image', 'scalar', 'text'
       ]
+    omit_golden_symbols_map.update(
+        self._ignored_is_instance_types(['tensorflow.__internal__.FuncGraph'])
+    )
 
     self._checkBackwardsCompatibility(
         tf,
@@ -453,6 +453,10 @@ class ApiCompatibilityTest(test.TestCase):
     golden_file_patterns = os.path.join(
         resource_loader.get_root_dir_with_all_resources(),
         _KeyToFilePath('*', api_version))
+    omit_golden_symbols_map = {'tensorflow': ['pywrap_tensorflow']}
+    omit_golden_symbols_map.update(
+        self._ignored_is_instance_types(['tensorflow.python_io.TFRecordWriter'])
+    )
     self._checkBackwardsCompatibility(
         tf.compat.v1,
         golden_file_patterns,
@@ -461,7 +465,7 @@ class ApiCompatibilityTest(test.TestCase):
             'tf': ['pywrap_tensorflow'],
             'tf.compat': ['v1', 'v2'],
         },
-        omit_golden_symbols_map={'tensorflow': ['pywrap_tensorflow']})
+        omit_golden_symbols_map=omit_golden_symbols_map)
 
   def testAPIBackwardsCompatibilityV2(self):
     api_version = 2
@@ -475,6 +479,10 @@ class ApiCompatibilityTest(test.TestCase):
       omit_golden_symbols_map['tensorflow.summary'] = [
           'audio', 'histogram', 'image', 'scalar', 'text'
       ]
+    omit_golden_symbols_map.update(
+        self._ignored_is_instance_types(['tensorflow.__internal__.FuncGraph'])
+    )
+
     self._checkBackwardsCompatibility(
         tf.compat.v2,
         golden_file_patterns,
@@ -482,13 +490,38 @@ class ApiCompatibilityTest(test.TestCase):
         additional_private_map={'tf.compat': ['v1', 'v2']},
         omit_golden_symbols_map=omit_golden_symbols_map)
 
+  def _ignored_is_instance_types(self, extra_types=None):
+    # In case a new type is defined within a pywrap_<module_name>.so library,
+    # it will end up having proper type and location in distributed OSS wheel
+    # package eventually, but that conversion happens after this test is ran.
+    #
+    # Making this test depend on wheel itself also breaks because wheels use
+    # _upb as underlying protobuf implementation while internal TF uses cpp
+    # implementation (resulting in different is_instance values for protobuf
+    # metadata types in golden pbtxt depending on which protobuf implementation
+    # is being used during test execution). The cpp implementation is not  even
+    # included anymore in protobuf oss wheels.
+    #
+    # We end up in a situation when we cannot make this test pass internally and
+    # externally on the same set of golden expected .pbtxt inputs. It is rare
+    # and minor discrepancy, so just ignore the is_instance checks for the few
+    # problematic types, they are guaraneed to have proper types in final wheel
+    # anyway.
+    ignored_is_instance_types = [
+        'tensorflow.DType',
+        'tensorflow.dtypes.DType',
+        'tensorflow.__internal__.SymbolicTensor',
+        'tensorflow.Graph',
+        'tensorflow.Operation',
+        'tensorflow.io.TFRecordWriter'
+    ] + extra_types if extra_types else []
+    return {k: 'is_instance' for k in ignored_is_instance_types}
+
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
   parser.add_argument(
       '--update_goldens', type=bool, default=False, help=_UPDATE_GOLDENS_HELP)
-  # TODO(mikecase): Create Estimator's own API compatibility test or
-  # a more general API compatibility test for use for TF components.
   parser.add_argument(
       '--only_test_core_api',
       type=bool,

@@ -1,10 +1,15 @@
 """TensorFlow Lite Build Configurations for iOS"""
 
-load("//tensorflow:tensorflow.bzl", "clean_dep")
 load("@build_bazel_rules_apple//apple:apple.bzl", "apple_static_xcframework")
 
 # Placeholder for Google-internal load statements.
 load("@build_bazel_rules_apple//apple:ios.bzl", "ios_static_framework")
+
+# copybara:uncomment_begin(google-only)
+# load("//tensorflow:tensorflow.bzl", "clean_dep")
+# copybara:uncomment_end_and_comment_begin
+load("//tensorflow/lite:build_def.bzl", "clean_dep")
+# copybara:comment_end
 
 # LINT.IfChange
 TFL_MINIMUM_OS_VERSION = "12.0"

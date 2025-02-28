@@ -1,5 +1,3 @@
-# Example Estimator model
-
 load("//tensorflow:strict.default.bzl", "py_strict_binary", "py_strict_library")
 
 package(
@@ -11,10 +9,10 @@ package(
 py_strict_binary(
     name = "mnist_tflite",
     srcs = ["mnist_tflite.py"],
-    python_version = "PY3",
     deps = [
         ":dataset",
         "//tensorflow:tensorflow_py",
+        "//tensorflow/lite/python:lite",
         "//third_party/py/numpy",
     ],
 )

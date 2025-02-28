@@ -19,6 +19,7 @@ limitations under the License.
 #include "absl/strings/str_cat.h"
 #include "absl/strings/strip.h"
 #include "tensorflow/core/framework/dataset.h"
+#include "tensorflow/core/framework/metrics.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/node_def_builder.h"
 #include "tensorflow/core/framework/op_def.pb.h"
@@ -391,6 +392,9 @@ void ComposeSignature(const OpDef& first_signature,
   *fused_signature->mutable_output_arg() = second_signature.output_arg();
 
   if (first_signature.is_stateful() || second_signature.is_stateful()) {
+    if (!(first_signature.is_stateful() && second_signature.is_stateful())) {
+      metrics::RecordTFDataDebug("fused_with_mixed_statefulness");
+    }
     fused_signature->set_is_stateful(true);
   }
 
@@ -498,11 +502,14 @@ void LazyConjunctionOutput(const protobuf::Map<string, string>& first_ret,
   *fused_ret = first_ret;
 }
 
-FunctionDef* FuseFunctions(
-    const FunctionDef& first_function, const FunctionDef& second_function,
-    StringPiece fused_name_prefix, const SetFunctionSignatureFn& set_signature,
-    const SetInputFn& set_input, const SetOutputFn& set_output,
-    const SetNodesFn& set_nodes, FunctionDefLibrary* library) {
+FunctionDef* FuseFunctions(const FunctionDef& first_function,
+                           const FunctionDef& second_function,
+                           absl::string_view fused_name_prefix,
+                           const SetFunctionSignatureFn& set_signature,
+                           const SetInputFn& set_input,
+                           const SetOutputFn& set_output,
+                           const SetNodesFn& set_nodes,
+                           FunctionDefLibrary* library) {
   auto has_unknown_attrs = [](const FunctionDef& func) {
     int known_attribute_size = 0;
 

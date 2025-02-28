@@ -1,4 +1,4 @@
-/* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2023 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ limitations under the License.
 #include <cstdint>
 
 #include "absl/strings/str_cat.h"
-#include "tsl/lib/monitoring/gauge.h"
+#include "xla/tsl/lib/monitoring/gauge.h"
 
 namespace xla {
 namespace {
