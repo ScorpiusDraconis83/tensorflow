@@ -26,10 +26,9 @@ limitations under the License.
 namespace tensorflow {
 namespace grappler {
 
-Status ReplicateOnSplit::OptimizeAndCollectStats(Cluster* cluster,
-                                                 const GrapplerItem& item,
-                                                 GraphDef* output,
-                                                 OptimizationStats* stats) {
+absl::Status ReplicateOnSplit::OptimizeAndCollectStats(
+    Cluster* cluster, const GrapplerItem& item, GraphDef* output,
+    OptimizationStats* stats) {
   VLOG(1) << "Running replicate on split optimization";
   *output = item.graph;
   MutableGraphView graph(output);
@@ -40,7 +39,7 @@ Status ReplicateOnSplit::OptimizeAndCollectStats(Cluster* cluster,
       stats->num_changes++;
     }
   }
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 REGISTER_GRAPH_OPTIMIZER_AS(ReplicateOnSplit, "replicate_on_split");

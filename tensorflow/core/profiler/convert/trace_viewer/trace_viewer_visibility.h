@@ -16,6 +16,7 @@ limitations under the License.
 #define TENSORFLOW_CORE_PROFILER_CONVERT_TRACE_VIEWER_TRACE_VIEWER_VISIBILITY_H_
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -23,10 +24,11 @@ limitations under the License.
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/log/log.h"
 #include "absl/types/optional.h"
+#include "xla/tsl/profiler/utils/timespan.h"
 #include "tensorflow/core/profiler/convert/trace_viewer/trace_events_filter_interface.h"
 #include "tensorflow/core/profiler/protobuf/trace_events.pb.h"
-#include "tsl/profiler/utils/timespan.h"
 
 namespace tensorflow {
 namespace profiler {
@@ -54,6 +56,8 @@ class TraceViewerVisibility {
   void SetVisibleAtResolution(const TraceEvent& event);
 
   tsl::profiler::Timespan VisibleSpan() const { return visible_span_; }
+  // TODO(tf-profiler) Rename ResolutionPs and resolution_ps to be more
+  // self-explanatory (eg. MinDurationPs)
   uint64_t ResolutionPs() const { return resolution_ps_; }
 
  private:
@@ -130,16 +134,35 @@ class TraceVisibilityFilter : public TraceEventsFilterInterface {
   uint64_t ResolutionPs() const { return visibility_.ResolutionPs(); }
 
   void SetUp(const Trace& trace) override {
-    // If the visible_span was not set at construction time, use the trace
-    // bounds and recompute the resolution in picoseconds.
+    // Update visible_span with trace bounds and recompute the resolution in
+    // picoseconds.
     tsl::profiler::Timespan visible_span = VisibleSpan();
-    if (visible_span.Instant() && trace.has_min_timestamp_ps() &&
-        trace.has_max_timestamp_ps()) {
-      visible_span = tsl::profiler::Timespan::FromEndPoints(
-          trace.min_timestamp_ps(), trace.max_timestamp_ps());
-      visibility_ = TraceViewerVisibility(
-          visible_span, ResolutionPs(visible_span.duration_ps()));
+    uint64_t start_time_ps = visible_span.begin_ps();
+    uint64_t end_time_ps = visible_span.end_ps();
+    if (trace.has_min_timestamp_ps() &&
+        start_time_ps < trace.min_timestamp_ps()) {
+      VLOG(1) << "Adjusting start_time_ps from " << start_time_ps << " to "
+              << trace.min_timestamp_ps();
+      start_time_ps = trace.min_timestamp_ps();
     }
+    if (trace.has_max_timestamp_ps() &&
+        (end_time_ps == 0 || end_time_ps > trace.max_timestamp_ps())) {
+      VLOG(1) << "Adjusting end_time_ps from " << end_time_ps << " to "
+              << trace.max_timestamp_ps();
+      end_time_ps = trace.max_timestamp_ps();
+    }
+    visible_span =
+        tsl::profiler::Timespan::FromEndPoints(start_time_ps, end_time_ps);
+    visibility_ = TraceViewerVisibility(
+        visible_span, ResolutionPs(visible_span.duration_ps()));
+  }
+
+  // Updates the visibility based on `resolution`.
+  void UpdateVisibility(double resolution) {
+    resolution_ = resolution;
+    visibility_ = TraceViewerVisibility(
+        visibility_.VisibleSpan(),
+        ResolutionPs(visibility_.VisibleSpan().duration_ps()));
   }
 
   bool Filter(const TraceEvent& event) override {

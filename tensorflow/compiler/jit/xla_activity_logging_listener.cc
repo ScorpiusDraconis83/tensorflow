@@ -23,33 +23,34 @@ namespace {
 // Listens to XLA activity and logs them using tensorflow::Logger.
 class XlaActivityLoggingListener final : public XlaActivityListener {
  public:
-  Status Listen(
+  absl::Status Listen(
       const XlaAutoClusteringActivity& auto_clustering_activity) override {
     if (!IsEnabled()) {
       VLOG(3) << "Logging XlaAutoClusteringActivity disabled";
-      return OkStatus();
+      return absl::OkStatus();
     }
 
-    return OkStatus();
+    return absl::OkStatus();
   }
 
-  Status Listen(
+  absl::Status Listen(
       const XlaJitCompilationActivity& jit_compilation_activity) override {
     if (!IsEnabled()) {
       VLOG(3) << "Logging XlaJitCompilationActivity disabled";
-      return OkStatus();
+      return absl::OkStatus();
     }
 
-    return OkStatus();
+    return absl::OkStatus();
   }
 
-  Status Listen(const XlaOptimizationRemark& optimization_remark) override {
+  absl::Status Listen(
+      const XlaOptimizationRemark& optimization_remark) override {
     if (!IsEnabled()) {
       VLOG(3) << "Logging XlaJitCompilationActivity disabled";
-      return OkStatus();
+      return absl::OkStatus();
     }
 
-    return OkStatus();
+    return absl::OkStatus();
   }
 
  private:

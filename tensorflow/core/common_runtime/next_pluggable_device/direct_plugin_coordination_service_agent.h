@@ -20,10 +20,10 @@ limitations under the License.
 #include <string_view>
 
 #include "absl/time/time.h"
+#include "xla/tsl/distributed_runtime/coordination/coordination_service_agent.h"
 #include "tensorflow/core/common_runtime/next_pluggable_device/plugin_coordination_service_agent.h"
 #include "tensorflow/core/platform/status.h"
 #include "tensorflow/core/platform/statusor.h"
-#include "tsl/distributed_runtime/coordination/coordination_service_agent.h"
 
 namespace tensorflow {
 
@@ -38,24 +38,25 @@ class DirectPluginCoordinationServiceAgent
     return agent_->IsInitialized();
   }
 
-  Status InsertKeyValue(std::string_view key, std::string_view value) override {
+  absl::Status InsertKeyValue(std::string_view key,
+                              std::string_view value) override {
     return agent_->InsertKeyValue(key, value);
   }
 
-  StatusOr<std::string> GetKeyValue(std::string_view key) override {
+  absl::StatusOr<std::string> GetKeyValue(std::string_view key) override {
     return agent_->GetKeyValue(key);
   }
 
-  StatusOr<std::string> GetKeyValue(std::string_view key,
-                                    absl::Duration timeout) override {
+  absl::StatusOr<std::string> GetKeyValue(std::string_view key,
+                                          absl::Duration timeout) override {
     return agent_->GetKeyValue(key, timeout);
   }
 
-  StatusOr<std::string> TryGetKeyValue(std::string_view key) override {
+  absl::StatusOr<std::string> TryGetKeyValue(std::string_view key) override {
     return agent_->TryGetKeyValue(key);
   }
 
-  Status DeleteKeyValue(std::string_view key) override {
+  absl::Status DeleteKeyValue(std::string_view key) override {
     return agent_->DeleteKeyValue(key);
   }
 

@@ -9,7 +9,6 @@ package(
 py_strict_library(
     name = "structured_function",
     srcs = ["structured_function.py"],
-    srcs_version = "PY3",
     deps = [
         ":debug_mode",
         "//tensorflow/python/autograph/core:ag_ctx",
@@ -86,7 +85,6 @@ py_strict_library(
         "window_op.py",
         "zip_op.py",
     ],
-    srcs_version = "PY3",
     deps = [
         ":debug_mode",
         ":iterator_ops",
@@ -154,8 +152,10 @@ py_strict_library(
         "//tensorflow/python/util:deprecation",
         "//tensorflow/python/util:lazy_loader",
         "//tensorflow/python/util:nest",
+        "//tensorflow/python/util:numpy_compat",
         "//tensorflow/python/util:tf_export",
         "//third_party/py/numpy",
+        "@absl_py//absl/logging",
     ],
 )
 
@@ -166,7 +166,6 @@ py_strict_library(
         "iterator_autograph.py",
         "iterator_ops.py",
     ],
-    srcs_version = "PY3",
     deps = [
         ":optional_ops",
         ":options",
@@ -179,6 +178,7 @@ py_strict_library(
         "//tensorflow/python/data/util:structure",
         "//tensorflow/python/eager:context",
         "//tensorflow/python/framework:composite_tensor",
+        "//tensorflow/python/framework:constant_op",
         "//tensorflow/python/framework:dtypes",
         "//tensorflow/python/framework:errors",
         "//tensorflow/python/framework:ops",
@@ -188,9 +188,12 @@ py_strict_library(
         "//tensorflow/python/framework:tensor_spec",
         "//tensorflow/python/framework:type_spec",
         "//tensorflow/python/framework:type_utils",
+        "//tensorflow/python/ops:array_ops_stack",
         "//tensorflow/python/ops:cond",
         "//tensorflow/python/ops:dataset_ops_gen",
         "//tensorflow/python/ops:parsing_ops",
+        "//tensorflow/python/ops:string_ops",
+        "//tensorflow/python/ops/ragged:ragged_string_ops",
         "//tensorflow/python/saved_model:nested_structure_coder",
         "//tensorflow/python/trackable:base",
         "//tensorflow/python/training:saver",
@@ -205,7 +208,6 @@ py_strict_library(
 py_strict_library(
     name = "multi_device_iterator_ops",
     srcs = ["multi_device_iterator_ops.py"],
-    srcs_version = "PY3",
     deps = [
         ":dataset_ops",
         ":iterator_ops",
@@ -231,7 +233,6 @@ py_strict_library(
 py_strict_library(
     name = "optional_ops",
     srcs = ["optional_ops.py"],
-    srcs_version = "PY3",
     deps = [
         "//tensorflow/core:protos_all_py",
         "//tensorflow/python/data/util:structure",
@@ -250,7 +251,6 @@ py_strict_library(
 py_strict_library(
     name = "options",
     srcs = ["options.py"],
-    srcs_version = "PY3",
     deps = [
         ":test_mode",
         "//tensorflow/core:protos_all_py",
@@ -264,7 +264,6 @@ py_strict_library(
 py_strict_library(
     name = "readers",
     srcs = ["readers.py"],
-    srcs_version = "PY3",
     deps = [
         ":dataset_ops",
         ":structured_function",

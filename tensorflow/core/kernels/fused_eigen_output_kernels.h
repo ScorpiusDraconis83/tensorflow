@@ -66,7 +66,7 @@ struct FusedComputationPattern {
 
 // Parse attributes from the kernel construction context, and verifies that they
 // specify valid fused computation pattern.
-Status InitializeFusedComputation(
+absl::Status InitializeFusedComputation(
     OpKernelConstruction* context, const string& kernel_name,
     const std::vector<FusedComputationPattern>& patterns,
     FusedComputationType* fused_computation,
@@ -409,8 +409,8 @@ template <typename T>
 using WithFusedBatchNormAndLeakyRelu = FusedBatchNormOutputKernel<T, LeakyRelu>;
 
 template <typename T>
-Status InitBiasAddArgs(OpKernelContext* context, BiasAddArgs<T>* args,
-                       const float* leakyrelu_alpha = nullptr) {
+absl::Status InitBiasAddArgs(OpKernelContext* context, BiasAddArgs<T>* args,
+                             const float* leakyrelu_alpha = nullptr) {
   // Bias of the following dimensions: [ output_depth ]
   const Tensor& bias = context->input(2);
 
@@ -428,13 +428,13 @@ Status InitBiasAddArgs(OpKernelContext* context, BiasAddArgs<T>* args,
     args->leakyrelu_alpha = *leakyrelu_alpha;
   }
 
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 template <typename T>
-Status InitFusedBatchNormArgs(OpKernelContext* context, float epsilon,
-                              FusedBatchNormArgs<T>* args,
-                              const float* leakyrelu_alpha = nullptr) {
+absl::Status InitFusedBatchNormArgs(OpKernelContext* context, float epsilon,
+                                    FusedBatchNormArgs<T>* args,
+                                    const float* leakyrelu_alpha = nullptr) {
   const Tensor& scale = context->input(2);
   const Tensor& offset = context->input(3);
   const Tensor& estimated_mean = context->input(4);
@@ -471,7 +471,7 @@ Status InitFusedBatchNormArgs(OpKernelContext* context, float epsilon,
     args->leakyrelu_alpha = *leakyrelu_alpha;
   }
 
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 }  // namespace tensorflow

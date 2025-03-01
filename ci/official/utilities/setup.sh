@@ -29,7 +29,7 @@
 # -o history: record shell history
 # -o allexport: export all functions and variables to be available to subscripts
 #               (affects 'source $TFCI')
-set -euxo pipefail -o history -o allexport
+set -exo pipefail -o history -o allexport
 
 # Set TFCI_GIT_DIR, the root directory for all commands, to two directories
 # above the location of this file (setup.sh). We could also use "git rev-parse
@@ -61,13 +61,16 @@ else
   # Source the default ci values
   source ./ci/official/envs/ci_default
 
-  # Sourcing TFCI twice, the first time with "-u" unset, means that variable
-  # order does not matter. i.e. "TFCI_BAR=$TFCI_FOO; TFCI_FOO=true" will work.
-  # TFCI_FOO is only valid the second time through.
+  # TODO(angerson) write this documentation
+  # Sources every env, in order, from the comma-separated list "TFCI"
+  # Assumes variables will resolve themselves correctly.
   set +u
-  source "$TFCI"
+  for env_file in ${TFCI//,/ }; do
+    source "./ci/official/envs/$env_file"
+  done
   set -u
-  source "$TFCI"
+  echo '==TFCI==: Evaluated the following TFCI variables from $TFCI:'
+  export -p | grep TFCI
 
   # Load those stored pre-existing TFCI_ vars, if any
   if [[ -s "$FROM_ENV" ]]; then
@@ -78,21 +81,24 @@ else
     source "$FROM_ENV"
     rm "$FROM_ENV"
   fi
+  set +u
+fi
+
+# If building installer wheels, set the required environment variables that are
+# read by setup.py.
+if [[ "$TFCI_INSTALLER_WHL_ENABLE" == 1 ]]; then
+  export collaborator_build=True
+  # If building nightly installer wheels, set the project name to
+  # nightly equivalent.
+  if [[ "$TFCI_NIGHTLY_UPDATE_VERSION_ENABLE" == 1 ]]; then
+    export TFCI_INSTALLER_WHL_PROJECT_NAME="$TFCI_INSTALLER_WHL_NIGHTLY_PROJECT_NAME"
+  fi
+  export project_name="$TFCI_INSTALLER_WHL_PROJECT_NAME"
 fi
 
 # Mac builds have some specific setup needs. See setup_macos.sh for details
 if [[ "${OSTYPE}" =~ darwin* ]]; then
   source ./ci/official/utilities/setup_macos.sh
-fi
-
-# Force-disable uploads if the job initiator is not Kokoro
-# This is temporary: it's currently standard practice for employees to
-# run nightly jobs for testing purposes. We're aiming to move away from
-# this with more convenient methods, but as long as it's possible to do,
-# we want to make sure those extra jobs don't upload anything.
-# TODO(angerson) Remove this once it's no longer relevant
-if [[ "${KOKORO_BUILD_INITIATOR:-}" != "kokoro" ]]; then
-  source ./ci/official/envs/disable_all_uploads
 fi
 
 # Create and expand to the full path of TFCI_OUTPUT_DIR
@@ -113,6 +119,12 @@ exec > >(tee "$TFCI_OUTPUT_DIR/script.log") 2>&1
 # functionality instead.
 tfrun() { "$@"; }
 
+if [[ $(uname -s) = MSYS_NT* ]]; then
+  source ./ci/official/utilities/windows.sh
+  echo 'Converting MSYS Linux-like paths to Windows paths (for Docker, Python, etc.)'
+  source <(python ./ci/official/utilities/convert_msys_paths_to_win_paths.py --whitelist-prefix TFCI_)
+fi
+
 # Run all "tfrun" commands under Docker. See setup_docker.sh for details
 if [[ "$TFCI_DOCKER_ENABLE" == 1 ]]; then
   source ./ci/official/utilities/setup_docker.sh
@@ -122,6 +134,15 @@ fi
 if [[ "$TFCI_INDEX_HTML_ENABLE" == 1 ]]; then
   ./ci/official/utilities/generate_index_html.sh "$TFCI_OUTPUT_DIR/index.html"
 fi
+
+# Re-try `bazel --version` multiple times to get around
+# Bazel download issues.
+set +e
+MAX_RETRIES=2
+for ((i=1; i <= $MAX_RETRIES; i++)); do
+  tfrun bazel --version
+done
+set -e
 
 # Single handler for all cleanup actions, triggered on an EXIT trap.
 # TODO(angerson) Making this use different scripts may be overkill.

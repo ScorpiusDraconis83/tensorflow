@@ -1,7 +1,7 @@
 # Description:
 #   Utilities for sharding object-based checkpoints.
 
-load("//tensorflow:strict.default.bzl", "py_strict_library")
+load("//tensorflow:pytype.default.bzl", "pytype_strict_library")
 load("//tensorflow:tensorflow.default.bzl", "tf_py_strict_test")
 
 package(
@@ -12,13 +12,13 @@ package(
     licenses = ["notice"],
 )
 
-py_strict_library(
+pytype_strict_library(
     name = "sharding_policies",
     srcs = ["sharding_policies.py"],
-    srcs_version = "PY3",
     deps = [
         ":sharding_util",
         "//tensorflow/python/eager:context",
+        "//tensorflow/python/framework:device",
         "//tensorflow/python/framework:dtypes",
         "//tensorflow/python/framework:ops",
         "//tensorflow/python/framework:tensor",
@@ -35,13 +35,13 @@ py_strict_library(
 tf_py_strict_test(
     name = "sharding_policies_test",
     srcs = ["sharding_policies_test.py"],
-    srcs_version = "PY3",
     deps = [
         ":sharding_policies",
         ":sharding_util",
         "//tensorflow/python/checkpoint",
         "//tensorflow/python/checkpoint:checkpoint_options",
         "//tensorflow/python/checkpoint:graph_view",
+        "//tensorflow/python/eager:def_function",
         "//tensorflow/python/eager:remote",
         "//tensorflow/python/eager:test",
         "//tensorflow/python/framework:device",
@@ -59,10 +59,9 @@ tf_py_strict_test(
     ],
 )
 
-py_strict_library(
+pytype_strict_library(
     name = "sharding_util",
     srcs = ["sharding_util.py"],
-    srcs_version = "PY3",
     deps = [
         "//tensorflow/python/framework:device",
         "//tensorflow/python/framework:dtypes",
@@ -73,14 +72,12 @@ py_strict_library(
         "//tensorflow/python/trackable:base",
         "//tensorflow/python/training/saving:saveable_object",
         "//tensorflow/python/util:tf_export",
-        "@absl_py//absl/logging",
     ],
 )
 
 tf_py_strict_test(
     name = "sharding_util_test",
     srcs = ["sharding_util_test.py"],
-    srcs_version = "PY3",
     deps = [
         ":sharding_policies",
         ":sharding_util",

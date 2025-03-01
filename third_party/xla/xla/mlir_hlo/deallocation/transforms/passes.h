@@ -1,4 +1,4 @@
-/* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2023 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,6 +30,11 @@ namespace deallocation {
 // coalescing).
 std::unique_ptr<mlir::OperationPass<mlir::func::FuncOp>>
 createBufferReusePass();
+
+// Creates an instance of the BufferDeallocation pass to free all allocated
+// buffers.
+// TODO(b/380236304): Remove once migrated to one-shot bufferization.
+std::unique_ptr<mlir::Pass> createBufferDeallocationPass();
 
 #define GEN_PASS_REGISTRATION
 #include "deallocation/transforms/passes.h.inc"

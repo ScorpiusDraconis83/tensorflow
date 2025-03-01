@@ -1,4 +1,4 @@
-/* Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2022 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@ limitations under the License.
 ==============================================================================*/
 
 #include <iterator>
+#include <type_traits>
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
@@ -24,11 +25,12 @@ limitations under the License.
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinAttributes.h"
-#include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Types.h"
+#include "mlir/IR/ValueRange.h"
+#include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -43,11 +45,29 @@ namespace {
   if (!hloValue.has_value()) return {};                              \
   return mhlo::Name##Attr::get(attr.getContext(), hloValue.value())
 
+mhlo::ResultAccuracyMode convertResultAccuracyMode(
+    stablehlo::ResultAccuracyMode mode) {
+  switch (mode) {
+    case stablehlo::ResultAccuracyMode::DEFAULT:
+      return mhlo::ResultAccuracyMode::DEFAULT;
+    case stablehlo::ResultAccuracyMode::HIGHEST:
+      return mhlo::ResultAccuracyMode::HIGHEST;
+    case stablehlo::ResultAccuracyMode::TOLERANCE:
+      return mhlo::ResultAccuracyMode::TOLERANCE;
+    default:
+      return {};
+  }
+}
 Attribute convertAttr(Attribute stablehloAttr) {
   // StableHLO uses DenseArray for some attributes, MHLO is in the process
   // of integrating this change. In the meantime, convert DenseArray to
   // DenseElementsAttr.
-  if (auto attr = stablehloAttr.dyn_cast<DenseI64ArrayAttr>()) {
+  if (auto attr = mlir::dyn_cast<DenseI64ArrayAttr>(stablehloAttr)) {
+    return DenseIntElementsAttr::get(
+        RankedTensorType::get(attr.getSize(), attr.getElementType()),
+        attr.asArrayRef());
+  }
+  if (auto attr = mlir::dyn_cast<DenseBoolArrayAttr>(stablehloAttr)) {
     return DenseIntElementsAttr::get(
         RankedTensorType::get(attr.getSize(), attr.getElementType()),
         attr.asArrayRef());
@@ -56,19 +76,20 @@ Attribute convertAttr(Attribute stablehloAttr) {
   // Handle StableHLO attributes.
   // The logic that handles attributes from other dialects (e.g. builtin
   // attributes) lives below.
-  if (auto attr = stablehloAttr.dyn_cast<stablehlo::ChannelHandleAttr>()) {
+  if (auto attr = mlir::dyn_cast<stablehlo::ChannelHandleAttr>(stablehloAttr)) {
     return mhlo::ChannelHandleAttr::get(attr.getContext(), attr.getHandle(),
                                         attr.getType());
   }
   if (auto attr =
-          stablehloAttr.dyn_cast<stablehlo::ComparisonDirectionAttr>()) {
+          mlir::dyn_cast<stablehlo::ComparisonDirectionAttr>(stablehloAttr)) {
     RETURN_CONVERTED_ENUM_ATTR(ComparisonDirection);
   }
-  if (auto attr = stablehloAttr.dyn_cast<stablehlo::ComparisonTypeAttr>()) {
+  if (auto attr =
+          mlir::dyn_cast<stablehlo::ComparisonTypeAttr>(stablehloAttr)) {
     RETURN_CONVERTED_ENUM_ATTR(ComparisonType);
   }
   if (auto attr =
-          stablehloAttr.dyn_cast<stablehlo::ConvDimensionNumbersAttr>()) {
+          mlir::dyn_cast<stablehlo::ConvDimensionNumbersAttr>(stablehloAttr)) {
     return mhlo::ConvDimensionNumbersAttr::get(
         attr.getContext(), attr.getInputBatchDimension(),
         attr.getInputFeatureDimension(), attr.getInputSpatialDimensions(),
@@ -78,48 +99,73 @@ Attribute convertAttr(Attribute stablehloAttr) {
         attr.getOutputFeatureDimension(), attr.getOutputSpatialDimensions());
   }
   if (auto attr =
-          stablehloAttr.dyn_cast<stablehlo::CustomCallApiVersionAttr>()) {
+          mlir::dyn_cast<stablehlo::CustomCallApiVersionAttr>(stablehloAttr)) {
     RETURN_CONVERTED_ENUM_ATTR(CustomCallApiVersion);
   }
+  if (auto attr = mlir::dyn_cast<stablehlo::DotAlgorithmAttr>(stablehloAttr)) {
+    return mhlo::DotAlgorithmAttr::get(
+        attr.getContext(), attr.getLhsPrecisionType(),
+        attr.getRhsPrecisionType(), attr.getAccumulationType(),
+        attr.getLhsComponentCount(), attr.getRhsComponentCount(),
+        attr.getNumPrimitiveOperations(), attr.getAllowImpreciseAccumulation());
+  }
   if (auto attr =
-          stablehloAttr.dyn_cast<stablehlo::DotDimensionNumbersAttr>()) {
+          mlir::dyn_cast<stablehlo::DotDimensionNumbersAttr>(stablehloAttr)) {
     return mhlo::DotDimensionNumbersAttr::get(
         attr.getContext(), attr.getLhsBatchingDimensions(),
         attr.getRhsBatchingDimensions(), attr.getLhsContractingDimensions(),
         attr.getRhsContractingDimensions());
   }
-  if (auto attr = stablehloAttr.dyn_cast<stablehlo::FftTypeAttr>()) {
+  if (auto attr = mlir::dyn_cast<stablehlo::FftTypeAttr>(stablehloAttr)) {
     RETURN_CONVERTED_ENUM_ATTR(FftType);
   }
-  if (auto attr =
-          stablehloAttr.dyn_cast<stablehlo::GatherDimensionNumbersAttr>()) {
+  if (auto attr = mlir::dyn_cast<stablehlo::GatherDimensionNumbersAttr>(
+          stablehloAttr)) {
     return mhlo::GatherDimensionNumbersAttr::get(
         attr.getContext(), attr.getOffsetDims(), attr.getCollapsedSliceDims(),
+        attr.getOperandBatchingDims(), attr.getStartIndicesBatchingDims(),
         attr.getStartIndexMap(), attr.getIndexVectorDim());
   }
-  if (auto attr = stablehloAttr.dyn_cast<stablehlo::OutputOperandAliasAttr>()) {
+  if (auto attr =
+          mlir::dyn_cast<stablehlo::OutputOperandAliasAttr>(stablehloAttr)) {
     return mhlo::OutputOperandAliasAttr::get(
         attr.getContext(), attr.getOutputTupleIndices(), attr.getOperandIndex(),
         attr.getOperandTupleIndices());
   }
-  if (auto attr = stablehloAttr.dyn_cast<stablehlo::PrecisionAttr>()) {
+  if (auto attr = mlir::dyn_cast<stablehlo::PrecisionAttr>(stablehloAttr)) {
     RETURN_CONVERTED_ENUM_ATTR(Precision);
   }
-  if (auto attr = stablehloAttr.dyn_cast<stablehlo::RngAlgorithmAttr>()) {
+  if (auto attr = mlir::dyn_cast<stablehlo::RngAlgorithmAttr>(stablehloAttr)) {
     RETURN_CONVERTED_ENUM_ATTR(RngAlgorithm);
   }
-  if (auto attr = stablehloAttr.dyn_cast<stablehlo::RngDistributionAttr>()) {
+  if (auto attr =
+          mlir::dyn_cast<stablehlo::RngDistributionAttr>(stablehloAttr)) {
     RETURN_CONVERTED_ENUM_ATTR(RngDistribution);
   }
-  if (auto attr =
-          stablehloAttr.dyn_cast<stablehlo::ScatterDimensionNumbersAttr>()) {
+  if (auto attr = mlir::dyn_cast<stablehlo::ScatterDimensionNumbersAttr>(
+          stablehloAttr)) {
     return mhlo::ScatterDimensionNumbersAttr::get(
         attr.getContext(), attr.getUpdateWindowDims(),
-        attr.getInsertedWindowDims(), attr.getScatterDimsToOperandDims(),
-        attr.getIndexVectorDim());
+        attr.getInsertedWindowDims(), attr.getInputBatchingDims(),
+        attr.getScatterIndicesBatchingDims(),
+        attr.getScatterDimsToOperandDims(), attr.getIndexVectorDim());
   }
-  if (auto attr = stablehloAttr.dyn_cast<stablehlo::TransposeAttr>()) {
+  if (auto attr = mlir::dyn_cast<stablehlo::TransposeAttr>(stablehloAttr)) {
     RETURN_CONVERTED_ENUM_ATTR(Transpose);
+  }
+  if (auto attr =
+          mlir::dyn_cast<stablehlo::ResultAccuracyModeAttr>(stablehloAttr)) {
+    RETURN_CONVERTED_ENUM_ATTR(ResultAccuracyMode);
+  }
+  if (auto attr =
+          mlir::dyn_cast<stablehlo::ResultAccuracyAttr>(stablehloAttr)) {
+    mhlo::ResultAccuracyModeAttr modeAttr = mhlo::ResultAccuracyModeAttr::get(
+        attr.getContext(),
+        convertResultAccuracyMode(attr.getMode().getValue()));
+
+    return mhlo::ResultAccuracyAttr::get(attr.getContext(), attr.getAtol(),
+                                         attr.getRtol(), attr.getUlps(),
+                                         modeAttr);
   }
   if (stablehloAttr.getDialect().getNamespace() ==
       stablehlo::StablehloDialect::getDialectNamespace()) {
@@ -132,14 +178,14 @@ Attribute convertAttr(Attribute stablehloAttr) {
   // Handle non-StableHLO attributes.
   // If an attribute is not defined in StableHLO, then it is unchanged,
   // with the exception of ArrayAttr which is converted recursively.
-  if (auto stablehloAttrs = stablehloAttr.dyn_cast<ArrayAttr>()) {
+  if (auto attrs = mlir::dyn_cast<ArrayAttr>(stablehloAttr)) {
     SmallVector<Attribute> hloAttrs;
-    for (auto stablehloAttr : stablehloAttrs) {
-      auto hloAttr = convertAttr(stablehloAttr);
+    for (auto attr : attrs) {
+      auto hloAttr = convertAttr(attr);
       if (!hloAttr) return {};
       hloAttrs.push_back(hloAttr);
     }
-    return ArrayAttr::get(stablehloAttrs.getContext(), hloAttrs);
+    return ArrayAttr::get(attrs.getContext(), hloAttrs);
   }
   return stablehloAttr;
 }
@@ -149,11 +195,11 @@ Attribute convertAttr(Attribute stablehloAttr) {
 // Convert array of enum strings to array of enum attrs
 //   ["PACKED_NIBBLE"] --> [#mhlo<precision PACKED_NIBBLE>]
 Attribute decodePrecisionConfig(Attribute stablehloAttr) {
-  auto arrayAttr = stablehloAttr.dyn_cast<ArrayAttr>();
+  auto arrayAttr = mlir::dyn_cast<ArrayAttr>(stablehloAttr);
   if (!arrayAttr) return {};
   SmallVector<Attribute> hloAttrs;
   for (auto attr : arrayAttr) {
-    auto precisionStr = attr.dyn_cast<StringAttr>();
+    auto precisionStr = mlir::dyn_cast<StringAttr>(attr);
     if (!precisionStr) return {};
     auto precisionOpt = mhlo::symbolizePrecision(precisionStr.getValue());
     if (!precisionOpt.has_value()) return {};
@@ -220,12 +266,12 @@ LogicalResult rewriteCustomCallAsMhloOp(stablehlo::CustomCallOp stablehloOp,
            name == "mhlo.version";
   };
   if (!llvm::all_of(stablehloOp->getAttrs(), isSupportedAttrName) ||
-      !stablehloOp.getBackendConfig().empty()) {
+      !stablehloOp.hasEmptyBackendConfig()) {
     return failure();
   }
 
-  auto stablehloConvertedAttrs = stablehloOp->getAttr("mhlo.attributes")
-                                     .dyn_cast_or_null<DictionaryAttr>();
+  auto stablehloConvertedAttrs = mlir::dyn_cast_or_null<DictionaryAttr>(
+      stablehloOp->getAttr("mhlo.attributes"));
   if (!stablehloConvertedAttrs) {
     return failure();
   }
@@ -263,7 +309,7 @@ LogicalResult rewriteCustomCallAsMhloOp(stablehlo::CustomCallOp stablehloOp,
   if (stablehloHasRegion) {
     auto stablehloRegionOp =
         stablehloOp->getParentOfType<ModuleOp>().lookupSymbol<func::FuncOp>(
-            stablehloCalledComputations[0].cast<FlatSymbolRefAttr>());
+            mlir::cast<FlatSymbolRefAttr>(stablehloCalledComputations[0]));
     if (failed(convertFuncToStablehloRegion(hloOp, stablehloRegionOp, rewriter,
                                             typeConverter)))
       return failure();
@@ -283,9 +329,8 @@ LogicalResult fixupMhloBackendConfig(stablehlo::CustomCallOp stablehloOp,
                                      mhlo::CustomCallOp hloOp) {
   auto stablehloBackendConfig = stablehloOp->getAttr("mhlo.backend_config");
   if (stablehloBackendConfig) {
-    if (auto oldHloBackendConfig =
-            hloOp.getBackendConfigAttr()
-                .template dyn_cast_or_null<StringAttr>()) {
+    if (auto oldHloBackendConfig = mlir::dyn_cast<StringAttr>(
+            stablehloOp.getBackendConfigOrDefault())) {
       if (!oldHloBackendConfig.empty()) return failure();
     } else {
       return failure();
@@ -346,18 +391,18 @@ class StablehloToHloOpConverter : public OpConversionPattern<StablehloOpTy> {
       hloAttrs.push_back({stablehloAttr.getName(), hloAttr});
     }
 
-    // Convert the MHLO operation to a StableHLO equivalent.
+    // Convert the StableHLO operation to a MHLO equivalent.
     // This can almost be done in a generic fashion, except for mhlo.case
     // that uses a variadic number of regions which means an additional argument
     // for the generic builder.
     StablehloToHloOp<StablehloOpTy> hloOp;
     if constexpr (std::is_same<StablehloOpTy, stablehlo::CaseOp>::value) {
-      hloOp = rewriter.replaceOpWithNewOp<mhlo::CaseOp>(
-          stablehloOp, hloTypes, hloOperands, hloAttrs,
-          stablehloOp.getBranches().size());
+      hloOp = rewriter.create<mhlo::CaseOp>(stablehloOp.getLoc(), hloTypes,
+                                            hloOperands, hloAttrs,
+                                            stablehloOp.getBranches().size());
     } else {
-      hloOp = rewriter.replaceOpWithNewOp<StablehloToHloOp<StablehloOpTy>>(
-          stablehloOp, hloTypes, hloOperands, hloAttrs);
+      hloOp = rewriter.create<StablehloToHloOp<StablehloOpTy>>(
+          stablehloOp.getLoc(), hloTypes, hloOperands, hloAttrs);
     }
 
     // For backward compatibility, fix custom call with mhlo.backend_config
@@ -374,7 +419,23 @@ class StablehloToHloOpConverter : public OpConversionPattern<StablehloOpTy> {
                                              /*entryConversion=*/nullptr)))
         return failure();
     }
+
+    rewriter.replaceOp(stablehloOp, hloOp);
     return success();
+  }
+};
+
+// Deprecated ops.
+template <>
+class StablehloToHloOpConverter<stablehlo::UnaryEinsumOp>
+    : public OpConversionPattern<UnaryEinsumOp> {
+ public:
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult matchAndRewrite(stablehlo::UnaryEinsumOp stablehloOp,
+                                typename stablehlo::UnaryEinsumOp::Adaptor,
+                                ConversionPatternRewriter&) const final {
+    return stablehloOp.emitError(
+        "UnaryEinsumOp is deprecated and not supported in MHLO");
   }
 };
 

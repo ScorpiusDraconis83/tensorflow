@@ -47,7 +47,7 @@ limitations under the License.
 #include "tensorflow/core/util/work_sharder.h"
 
 #if defined(TENSORFLOW_USE_CUSTOM_CONTRACTION_KERNEL)
-#include "tsl/framework/contraction/eigen_contraction_kernel.h"
+#include "xla/tsl/framework/contraction/eigen_contraction_kernel.h"
 #endif
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
@@ -601,12 +601,13 @@ struct LaunchBatchMatMul<GPUDevice, Scalar> {
 #if GOOGLE_CUDA || TF_HIPBLASLT
     static const bool use_autotune = MatmulAutotuneEnable();
     bool bCublasLtSupport = true;
-#if TF_HIPBLASLT
-    if (!std::is_same_v<Scalar, float>) bCublasLtSupport = false;
-    auto cap = stream->GetRocmComputeCapability();
-    // as of ROCm 5.5, hipblaslt only supports MI200.
-    if (cap.gcn_arch_name().substr(0, 6) != "gfx90a") bCublasLtSupport = false;
-#endif
+
+    const auto& cc =
+        stream->parent()->GetDeviceDescription().gpu_compute_capability();
+    if (auto* procm = std::get_if<se::RocmComputeCapability>(&cc)) {
+      bCublasLtSupport = procm->gfx9_mi200_or_later();
+    }
+
     if (EnableCublasLtGemm() && bCublasLtSupport) {
       static const int64_t max_scratch_size =
           GetWorkspaceLimit(1LL << 32);  // 4GB by default
@@ -636,7 +637,7 @@ struct LaunchBatchMatMul<GPUDevice, Scalar> {
         std::optional<int> max_algorithm_count;
         if (!use_autotune) max_algorithm_count = 1;
         absl::Mutex* pmu = nullptr;
-        auto plan_and_algorithms_or = GetPlanAndAlgorithms(
+        auto plan_and_algorithms_or = PlanAndAlgorithms::GetOrCreate(
             stream, matmul_params, &pmu, max_algorithm_count);
         OP_REQUIRES_OK(context, plan_and_algorithms_or.status());
         absl::MutexLock lock(pmu);
@@ -658,10 +659,9 @@ struct LaunchBatchMatMul<GPUDevice, Scalar> {
             // Create a new scratch allocator with every autotuning run so that
             // scratch space is deallocated between runs.
             BlasScratchAllocator scratch_allocator(context, max_scratch_size);
-            Status cublas_launch_status =
-                DoBlasLtMatmul(stream, *plan_and_algorithms, *a_ptrs[0],
-                               *b_ptrs[0], *c_ptrs[0], i, scratch_allocator,
-                               /*bias = */ {}, &profile_result);
+            Status cublas_launch_status = plan_and_algorithms->ExecuteOnStream(
+                stream, *a_ptrs[0], *b_ptrs[0], *c_ptrs[0], i,
+                scratch_allocator, se::DeviceMemoryBase{}, &profile_result);
 
             VLOG(4) << "  Autotune algorithm " << i
                     << " result: " << profile_result.elapsed_time_in_ms()
@@ -699,10 +699,9 @@ struct LaunchBatchMatMul<GPUDevice, Scalar> {
                 << "trans_x = " << trans_x << "trans_y = " << trans_y
                 << "adj_x = " << adj_x << "adj_y = " << adj_y;
 
-        OP_REQUIRES_OK(
-            context,
-            DoBlasLtMatmul(stream, *plan_and_algorithms, *a_ptrs[0], *b_ptrs[0],
-                           *c_ptrs[0], algorithm_idx, scratch_allocator));
+        OP_REQUIRES_OK(context, plan_and_algorithms->ExecuteOnStream(
+                                    stream, *a_ptrs[0], *b_ptrs[0], *c_ptrs[0],
+                                    algorithm_idx, scratch_allocator));
       } else {  // requires mixed broadcasting
         const std::vector<int64_t>& a_batch_indices = bcast.x_batch_indices();
         const std::vector<int64_t>& b_batch_indices = bcast.y_batch_indices();
@@ -720,15 +719,15 @@ struct LaunchBatchMatMul<GPUDevice, Scalar> {
         }
 
         BlasScratchAllocator scratch_allocator(context, max_scratch_size);
-        bool blas_launch_status =
-            stream
-                ->ThenBlasGemmBatchedWithScratch(
-                    blas_transpose_b, blas_transpose_a, n, m, k,
-                    static_cast<Coefficient>(1.0), b_ptrs,
-                    adj_y || trans_y ? k : n, a_ptrs, adj_x || trans_x ? m : k,
-                    static_cast<Coefficient>(0.0), c_ptrs, n, batch_size,
-                    GetNumericOptions(), &scratch_allocator, call_context)
-                .ok();
+        auto blas = stream->parent()->AsBlas();
+        OP_REQUIRES(context, blas != nullptr,
+                    absl::InternalError("No blas support for stream"));
+        bool blas_launch_status = blas->DoBlasGemmBatched(
+            stream, blas_transpose_b, blas_transpose_a, n, m, k,
+            static_cast<Coefficient>(1.0), b_ptrs, adj_y || trans_y ? k : n,
+            a_ptrs, adj_x || trans_x ? m : k, static_cast<Coefficient>(0.0),
+            c_ptrs, n, batch_size, GetNumericOptions(), &scratch_allocator,
+            call_context);
         if (!blas_launch_status) {
           context->SetStatus(errors::Internal(
               "Blas xGEMMBatched launch failed: a.shape=",
@@ -785,6 +784,9 @@ struct LaunchBatchMatMul<GPUDevice, Scalar> {
       // C' = B' x A', where ' stands for transpose (not adjoint).
       // TODO(yangzihao): Choose the best of the three strategies using
       // autotune.
+      auto blas = stream->parent()->AsBlas();
+      OP_REQUIRES(context, blas != nullptr,
+                  absl::InternalError("No blas support for stream"));
       if (batch_size == 1) {
         // This is a regular matrix*matrix or matrix*vector multiply. Avoid the
         // overhead of the scratch allocator and the batch interface.
@@ -803,14 +805,11 @@ struct LaunchBatchMatMul<GPUDevice, Scalar> {
                 blas_transpose_a == se::blas::Transpose::kTranspose
                     ? se::blas::Transpose::kNoTranspose
                     : se::blas::Transpose::kTranspose;
-            bool blas_launch_status =
-                stream
-                    ->ThenBlasGemv(gemv_trans_a, adj_x || trans_x ? m : k,
-                                   adj_x || trans_x ? k : m,
-                                   static_cast<Coefficient>(1.0), *(a_ptrs[0]),
-                                   adj_x || trans_x ? m : k, *(b_ptrs[0]), 1,
-                                   static_cast<Coefficient>(0.0), c_ptrs[0], 1)
-                    .ok();
+            bool blas_launch_status = blas->DoBlasGemv(
+                stream, gemv_trans_a, adj_x || trans_x ? m : k,
+                adj_x || trans_x ? k : m, static_cast<Coefficient>(1.0),
+                *(a_ptrs[0]), adj_x || trans_x ? m : k, *(b_ptrs[0]), 1,
+                static_cast<Coefficient>(0.0), c_ptrs[0], 1);
             if (!blas_launch_status) {
               context->SetStatus(errors::Internal(
                   "Blas xGEMV launch failed : a.shape=",
@@ -821,16 +820,16 @@ struct LaunchBatchMatMul<GPUDevice, Scalar> {
           }
         }
 
-        OP_REQUIRES_OK(context,
-                       stream->ThenBlasGemm(
-                           blas_transpose_b, blas_transpose_a, n, m, k,
+        OP_REQUIRES_OK(
+            context,
+            blas->BlasGemm(stream, blas_transpose_b, blas_transpose_a, n, m, k,
                            *(b_ptrs[0]), adj_y || trans_y ? k : n, *(a_ptrs[0]),
                            adj_x || trans_x ? m : k, c_ptrs[0], n,
                            GetNumericOptions(), call_context));
       } else if (use_strided_batched) {
         OP_REQUIRES_OK(
-            context, stream->ThenBlasGemmStridedBatched(
-                         blas_transpose_b, blas_transpose_a, n, m, k,
+            context, blas->BlasGemmStridedBatched(
+                         stream, blas_transpose_b, blas_transpose_a, n, m, k,
                          static_cast<Coefficient>(1.0), *b_ptrs[0],
                          adj_y || trans_y ? k : n, b_stride, *a_ptrs[0],
                          adj_x || trans_x ? m : k, a_stride,
@@ -838,15 +837,12 @@ struct LaunchBatchMatMul<GPUDevice, Scalar> {
                          batch_size, GetNumericOptions(), call_context));
       } else {
         BlasScratchAllocator scratch_allocator(context);
-        bool blas_launch_status =
-            stream
-                ->ThenBlasGemmBatchedWithScratch(
-                    blas_transpose_b, blas_transpose_a, n, m, k,
-                    static_cast<Coefficient>(1.0), b_ptrs,
-                    adj_y || trans_y ? k : n, a_ptrs, adj_x || trans_x ? m : k,
-                    static_cast<Coefficient>(0.0), c_ptrs, n, batch_size,
-                    GetNumericOptions(), &scratch_allocator, call_context)
-                .ok();
+        bool blas_launch_status = blas->DoBlasGemmBatched(
+            stream, blas_transpose_b, blas_transpose_a, n, m, k,
+            static_cast<Coefficient>(1.0), b_ptrs, adj_y || trans_y ? k : n,
+            a_ptrs, adj_x || trans_x ? m : k, static_cast<Coefficient>(0.0),
+            c_ptrs, n, batch_size, GetNumericOptions(), &scratch_allocator,
+            call_context);
         if (!blas_launch_status) {
           context->SetStatus(errors::Internal(
               "Blas xGEMMBatched launch failed : a.shape=",
@@ -919,7 +915,7 @@ class BaseBatchMatMulOp : public OpKernel {
     const Tensor& in0 = ctx->input(0);
     const Tensor& in1 = ctx->input(1);
 
-    const Status s = ValidateInputTensors(ctx, in0, in1);
+    const absl::Status s = ValidateInputTensors(ctx, in0, in1);
     if (!s.ok()) {
       ctx->SetStatus(s);
       return;
@@ -1023,8 +1019,9 @@ class BaseBatchMatMulOp : public OpKernel {
   }
 
  protected:
-  virtual Status ValidateInputTensors(OpKernelContext* ctx, const Tensor& in0,
-                                      const Tensor& in1) = 0;
+  virtual absl::Status ValidateInputTensors(OpKernelContext* ctx,
+                                            const Tensor& in0,
+                                            const Tensor& in1) = 0;
 
  private:
   // TODO(171979567) Make the ops take both adj and transpose attributes.
@@ -1055,8 +1052,8 @@ class BatchMatMulOp : public BaseBatchMatMulOp<Device, Ta, Tb, Tout> {
   ~BatchMatMulOp() override {}
 
  private:
-  Status ValidateInputTensors(OpKernelContext* ctx, const Tensor& in0,
-                              const Tensor& in1) override {
+  absl::Status ValidateInputTensors(OpKernelContext* ctx, const Tensor& in0,
+                                    const Tensor& in1) override {
     // Disallow broadcasting support. Ensure that all batch dimensions of the
     // input tensors match.
     if (in0.dims() != in1.dims()) {
@@ -1084,7 +1081,7 @@ class BatchMatMulOp : public BaseBatchMatMulOp<Device, Ta, Tb, Tout> {
         }
       }
     }
-    return OkStatus();
+    return absl::OkStatus();
   }
 };
 
@@ -1100,8 +1097,8 @@ class BatchMatMulV2Op : public BaseBatchMatMulOp<Device, Ta, Tb, Tout> {
   ~BatchMatMulV2Op() override {}
 
  private:
-  Status ValidateInputTensors(OpKernelContext* ctx, const Tensor& in0,
-                              const Tensor& in1) override {
+  absl::Status ValidateInputTensors(OpKernelContext* ctx, const Tensor& in0,
+                                    const Tensor& in1) override {
     // Enable broadcasting support. Validity of broadcasting is checked in
     // BaseBatchMatMulOp.
     if (in0.dims() < 2) {
@@ -1110,7 +1107,7 @@ class BatchMatMulV2Op : public BaseBatchMatMulOp<Device, Ta, Tb, Tout> {
     if (in1.dims() < 2) {
       return errors::InvalidArgument("In[1] ndims must be >= 2: ", in1.dims());
     }
-    return OkStatus();
+    return absl::OkStatus();
   }
 };
 

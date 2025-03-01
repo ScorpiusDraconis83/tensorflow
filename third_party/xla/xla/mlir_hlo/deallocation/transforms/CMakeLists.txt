@@ -1,4 +1,4 @@
-# Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2023 The OpenXLA Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ include_directories(BEFORE
 
 add_mlir_library(DeallocationPasses
   buffer_reuse.cc
+  buffer_deallocation.cc
 
   DEPENDS
   MLIRDeallocationPassesIncGen

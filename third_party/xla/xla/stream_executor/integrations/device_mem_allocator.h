@@ -1,4 +1,4 @@
-/* Copyright 2019 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2019 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,8 +19,8 @@ limitations under the License.
 #include <vector>
 
 #include "xla/stream_executor/stream_executor.h"
-#include "tsl/framework/allocator.h"
-#include "tsl/framework/device_id.h"
+#include "xla/tsl/framework/allocator.h"
+#include "xla/tsl/framework/device_id.h"
 #include "tsl/profiler/lib/traceme.h"
 
 namespace stream_executor {
@@ -31,15 +31,12 @@ class DeviceMemAllocator : public tsl::SubAllocator {
   // 'platform_device_id' refers to the ID of the device within
   // the process and must reference a valid ID in the process.
   // Note: stream_exec cannot be null.
-  explicit DeviceMemAllocator(StreamExecutor* stream_exec,
-                              tsl::PlatformDeviceId device_id,
-                              bool use_unified_memory,
-                              const std::vector<Visitor>& alloc_visitors,
-                              const std::vector<Visitor>& free_visitors)
-      : SubAllocator(alloc_visitors, free_visitors),
+  DeviceMemAllocator(StreamExecutor* stream_exec,
+                     tsl::PlatformDeviceId device_id,
+                     const std::vector<Visitor>& alloc_visitors = {})
+      : SubAllocator(alloc_visitors, {}),
         stream_exec_(stream_exec),
-        device_id_(device_id),
-        use_unified_memory_(use_unified_memory) {
+        device_id_(device_id) {
     CHECK(stream_exec_ != nullptr);
   }
 
@@ -52,11 +49,7 @@ class DeviceMemAllocator : public tsl::SubAllocator {
     void* ptr = nullptr;
     *bytes_received = num_bytes;
     if (num_bytes > 0) {
-      if (use_unified_memory_) {
-        ptr = stream_exec_->UnifiedMemoryAllocate(num_bytes);
-      } else {
-        ptr = stream_exec_->AllocateArray<char>(num_bytes).opaque();
-      }
+      ptr = stream_exec_->AllocateArray<char>(num_bytes).opaque();
       VisitAlloc(ptr, device_id_.value(), num_bytes);
     }
     return ptr;
@@ -67,12 +60,8 @@ class DeviceMemAllocator : public tsl::SubAllocator {
 
     if (ptr != nullptr) {
       VisitFree(ptr, device_id_.value(), num_bytes);
-      if (use_unified_memory_) {
-        stream_exec_->UnifiedMemoryDeallocate(ptr);
-      } else {
-        DeviceMemoryBase device_ptr(ptr);
-        stream_exec_->Deallocate(&device_ptr);
-      }
+      DeviceMemoryBase device_ptr(ptr);
+      stream_exec_->Deallocate(&device_ptr);
     }
   }
 
@@ -85,7 +74,6 @@ class DeviceMemAllocator : public tsl::SubAllocator {
  private:
   StreamExecutor* stream_exec_;  // not owned, non-null
   const tsl::PlatformDeviceId device_id_;
-  const bool use_unified_memory_ = false;
 
   DeviceMemAllocator(const DeviceMemAllocator&) = delete;
   void operator=(const DeviceMemAllocator&) = delete;

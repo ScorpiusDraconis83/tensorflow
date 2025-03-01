@@ -23,12 +23,12 @@ include "mlir/IR/OpBase.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/FunctionInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
-include "mlir/Dialect/Quant/QuantOpsBase.td"
+include "mlir/Dialect/Quant/IR/QuantBase.td"
 include "mlir/Interfaces/LoopLikeInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "tensorflow/compiler/mlir/lite/ir/tfl_op_interfaces.td"
 include "tensorflow/compiler/mlir/lite/ir/tfl_op_enums.td"
-include "tensorflow/compiler/mlir/lite/quantization/quantization.td"
+include "tensorflow/compiler/mlir/quantization/common/quantization_lib/quantization.td"
 include "tensorflow/compiler/mlir/tensorflow/ir/tf_op_base.td"
 
 //===----------------------------------------------------------------------===//
@@ -1061,7 +1061,7 @@ def TFL_DepthwiseConv2DOp :
 def TFL_FullyConnectedOp : TFL_Op<"fully_connected", [
     Pure, AccumulatorUniformScale<2, 0, 1>,
     AffineQuantizedOpInterface,
-    AffineOpCoefficient<-1, 1>,
+    AffineOpCoefficient<0, 1>,
     TFL_SparseOp,
     DeclareOpInterfaceMethods<TFL_ArithmeticCount>,
     QuantizableResult,
@@ -1097,7 +1097,7 @@ def TFL_FullyConnectedOp : TFL_Op<"fully_connected", [
   let extraClassDeclaration = [{
     // AffineQuantizedOpInterface:
     int GetChannelDimIndex() { return 0; }
-    int GetQuantizationDimIndex() { return -1; }
+    int GetQuantizationDimIndex() { return 0; }
     // SparseOpInterface:
     std::vector<int> GetSparseOperands() { return {1}; }
     std::vector<std::vector<int>> GetFloatBlockSize() { return {{1, 4}}; }
@@ -1135,7 +1135,7 @@ in the batch dimensions and broadcasting.
       `inputs[0]`: required: input LHS
       `inputs[1]`: required: input RHS
       `adjoint_lhs`: optional: Transpose LHS (default false)
-      `adjoint_lhs`: optional: Transpose LHS (default false)
+      `adjoint_rhs`: optional: Transpose RHS (default false)
   }];
 
   let arguments = (ins
@@ -1200,6 +1200,8 @@ def TFL_GatherOp : TFL_Op<"gather", [
 
   let hasVerifier = 1;
 
+  let hasFolder = 1;
+
   let extraClassDeclaration = [{
     // DynamicRangeQuantizedOpInterface:
     std::vector<int> GetQuantizableOperandIndices() { return {0}; }
@@ -1219,12 +1221,12 @@ def TFL_GatherNdOp : TFL_Op<"gather_nd", [
   }];
 
   let arguments = (ins
-    TFL_TensorOf<[F32, I1, I8, I16, I64, I32, UI8, TFL_Str]>:$params,
+    TFL_TensorOf<[F32, I1, I8, I16, I64, I32, UI8, QI8, TFL_Str]>:$params,
     TFL_TensorOf<[I16, I32, I64]>:$indices
   );
 
   let results = (outs
-    TFL_TensorOf<[F32, I1, I8, I16, I64, I32, UI8, TFL_Str]>:$output
+    TFL_TensorOf<[F32, I1, I8, I16, I64, I32, UI8, QI8, TFL_Str]>:$output
   );
 }
 
@@ -1280,6 +1282,8 @@ def TFL_LessEqualOp : TFL_Op<"less_equal", [
   let builders = [TFL_ComparisonBinaryBuilder];
 
   let hasCustomAssemblyFormat = 1;
+
+  let hasFolder = 1;
 
   let extraClassDefinition = [{
     ParseResult $cppClass::parse(OpAsmParser &parser, OperationState &result) {
@@ -1356,6 +1360,8 @@ def TFL_GreaterEqualOp : TFL_Op<"greater_equal", [
   let builders = [TFL_ComparisonBinaryBuilder];
 
   let hasCustomAssemblyFormat = 1;
+
+  let hasFolder = 1;
 
   let extraClassDefinition = [{
     ParseResult $cppClass::parse(OpAsmParser &parser, OperationState &result) {
@@ -1554,6 +1560,8 @@ def TFL_NotEqualOp : TFL_Op<"not_equal", [
 
   let results = (outs TFL_BoolTensor:$output);
 
+  let hasFolder = 1;
+
   let builders =
   [
     OpBuilder<(ins "Value":$lhs, "Value":$rhs),
@@ -1633,10 +1641,9 @@ def TFL_EluOp: TFL_Op<"elu", [
 
 def TFL_EmbeddingLookupOp: TFL_Op<"embedding_lookup",
     [Pure,
-     PredOpTrait<"value and output must have same element type",
-       TFL_TCresVTEtIsSameAsOp<0, 1>>,
      TFL_OperandHasRank<0, 1>,
      TFL_OperandHasRankAtLeast<1, 2>,
+     AffineQuantizedOpInterface,
      DynamicRangeQuantizedOpInterface,
      QuantizableResult
     ]> {
@@ -1648,7 +1655,7 @@ def TFL_EmbeddingLookupOp: TFL_Op<"embedding_lookup",
 
   let arguments = (ins
     TFL_TensorOf<[I32]>:$lookup,
-    TFL_TensorOf<[F32, I8, UI8]>:$value
+    TFL_TensorOf<[F32, I8, UI8, QI8, QUI8, QI4]>:$value
    );
 
   let results = (outs TFL_TensorOf<[F32, I8, UI8]>:$output);
@@ -1656,6 +1663,9 @@ def TFL_EmbeddingLookupOp: TFL_Op<"embedding_lookup",
   let hasFolder = 1;
 
   let extraClassDeclaration = [{
+    // AffineQuantizedOpInterface:
+    int GetChannelDimIndex() { return 0; }
+    int GetQuantizationDimIndex() { return 0; }
     // DynamicRangeQuantizedOpInterface:
     std::vector<int> GetQuantizableOperandIndices() { return {1}; }
   }];
@@ -1683,6 +1693,8 @@ def TFL_EqualOp: TFL_Op<"equal", [
   let results = (outs TFL_BoolTensor:$output);
 
   let builders = [TFL_ComparisonBinaryBuilder];
+
+  let hasFolder = 1;
 }
 
 def TFL_ExpOp: TFL_Op<"exp", [
@@ -1698,6 +1710,8 @@ def TFL_ExpOp: TFL_Op<"exp", [
   let arguments = (ins TFL_TensorOf<[F32, QI8, QI16]>:$x);
 
   let results = (outs TFL_TensorOf<[F32, QI8, QI16]>:$y);
+
+  let hasFolder = 1;
 
   // This builder doesn't work with quantized type, so it can only be used by
   // non-quantization tablegen patterns. Currently, it is used by the
@@ -1842,6 +1856,8 @@ def TFL_FloorOp: TFL_Op<"floor", [
 
   let results = (outs TFL_FpTensor:$y);
 
+  let hasFolder = 1;
+
   let extraClassDeclaration = [{
     // Returns whether the return types are compatible.
     static bool isCompatibleReturnTypes(TypeRange l, TypeRange r) {
@@ -1926,6 +1942,8 @@ def TFL_GreaterOp : TFL_Op<"greater", [
   let builders = [TFL_ComparisonBinaryBuilder];
 
   let hasCustomAssemblyFormat = 1;
+
+  let hasFolder = 1;
 
   let extraClassDefinition = [{
     ParseResult $cppClass::parse(OpAsmParser &parser, OperationState &result) {
@@ -2038,6 +2056,8 @@ def TFL_LessOp : TFL_Op<"less", [
 
   let hasCustomAssemblyFormat = 1;
 
+  let hasFolder = 1;
+
   let extraClassDefinition = [{
     ParseResult $cppClass::parse(OpAsmParser &parser, OperationState &result) {
       return parseOneResultSameOperandTypeOp(parser, result);
@@ -2048,7 +2068,7 @@ def TFL_LessOp : TFL_Op<"less", [
   }];
 }
 
-def TFL_LogicalAndOp : TFL_Op<"logical_and", [Pure]> {
+def TFL_LogicalAndOp : TFL_Op<"logical_and", [ResultsBroadcastableShape, Pure]> {
   let summary = "Logical AND operator";
 
   let description = [{
@@ -2062,6 +2082,8 @@ def TFL_LogicalAndOp : TFL_Op<"logical_and", [Pure]> {
   let results = (outs TFL_BoolTensor:$output);
 
   let hasCustomAssemblyFormat = 1;
+
+  let hasFolder = 1;
 
   let extraClassDefinition = [{
     ParseResult $cppClass::parse(OpAsmParser &parser, OperationState &result) {
@@ -2085,9 +2107,11 @@ def TFL_LogicalNotOp : TFL_Op<"logical_not", [
   let arguments = (ins TFL_BoolTensor:$lhs);
 
   let results = (outs TFL_BoolTensor:$output);
+
+  let hasFolder = 1;
 }
 
-def TFL_LogicalOrOp : TFL_Op<"logical_or", [Pure]> {
+def TFL_LogicalOrOp : TFL_Op<"logical_or", [ResultsBroadcastableShape, Pure]> {
   let summary = "Logical OR operator";
 
   let description = [{
@@ -2101,6 +2125,8 @@ def TFL_LogicalOrOp : TFL_Op<"logical_or", [Pure]> {
   let results = (outs TFL_BoolTensor:$output);
 
   let hasCustomAssemblyFormat = 1;
+
+  let hasFolder = 1;
 
   let extraClassDefinition = [{
     ParseResult $cppClass::parse(OpAsmParser &parser, OperationState &result) {
@@ -2269,6 +2295,8 @@ def TFL_MaximumOp : TFL_Op<"maximum", [
     TFL_TensorOf<[F32, TFL_Int32Or64, QI8, QUI8, QI16]>:$max
   );
 
+  let hasFolder = 1;
+
   let builders = [TFL_BroadcastableBinaryBuilder];
 
   let hasOptions = 0;
@@ -2395,6 +2423,8 @@ equivalent to setting:
   let hasVerifier = 1;
 
   let hasCanonicalizer = 1;
+
+  let hasFolder = 1;
 }
 
 def TFL_SumOp: TFL_Op<"sum", [
@@ -2421,6 +2451,8 @@ def TFL_SumOp: TFL_Op<"sum", [
 
   let hasOptions = 1;
   let customOption = "ReducerOptions";
+
+  let hasFolder = 1;
 
   // TODO(b/215655380): Re-enable this once there is 16-bit MLIR quantizer.
   //
@@ -2527,6 +2559,8 @@ def TFL_MinimumOp : TFL_Op<"minimum", [
   let results = (outs
     TFL_TensorOf<[F32, TFL_Int32Or64, QI8, QUI8, QI16]>:$min
   );
+
+  let hasFolder = 1;
 
   let builders = [TFL_BroadcastableBinaryBuilder];
 
@@ -2697,6 +2731,8 @@ def TFL_PadOp : TFL_Op<"pad", [
   let hasOptions = 1;
 
   let hasFolder = 1;
+
+  let hasCanonicalizer = 1;
 }
 
 def TFL_PadV2Op : TFL_Op<"padv2", [
@@ -2801,6 +2837,8 @@ def TFL_PowOp : TFL_Op<"pow", [
 
   let hasCustomAssemblyFormat = 1;
 
+  let hasFolder = 1;
+
   let extraClassDefinition = [{
     ParseResult $cppClass::parse(OpAsmParser &parser, OperationState &result) {
       return parseOneResultSameOperandTypeOp(parser, result);
@@ -2878,6 +2916,8 @@ def TFL_ReluOp: TFL_Op<"relu", [
   let arguments = (ins TFL_TensorOf<[F32, QUI8, QI8, QI16]>:$x);
 
   let results = (outs TFL_TensorOf<[F32, QUI8, QI8, QI16]>:$y);
+
+  let hasFolder = 1;
 
   // This builder doesn't work with quantized type, so it can only be used by
   // non-quantization tablegen patterns. Currently, it is used by the
@@ -2990,6 +3030,8 @@ def TFL_ReshapeOp: TFL_Op<"reshape", [
 
   let extraClassDeclaration = [{
     static bool isCompatibleReturnTypes(TypeRange l, TypeRange r);
+    // Quantized axes are verified in the Verify function.
+    bool RequiredSameQuantizedAxes() { return false; }
   }];
 }
 
@@ -3118,6 +3160,8 @@ def TFL_ReverseV2Op: TFL_Op<"reverse_v2", [
       TODO: Add support for multiple elements.
   }];
 
+  let hasFolder = 1;
+
   let arguments = (
     ins
     TFL_TensorOf<[F32, UI8, I16, I32, I64, QI16, QUI8, QI8, TFL_Quint8, I1]>:$input,
@@ -3154,6 +3198,8 @@ def TFL_SelectOp : TFL_Op<"select", [
 
   let results = (outs
     TFL_TensorOf<[F32, I1, I8, I16, I32, I64, UI32, QI8, QUI8, QI16, TFL_Quint8]>:$output);
+
+  let hasFolder = 1;
 
   // TODO(jpienaar): autogenerate this.
   let builders = [
@@ -3240,7 +3286,7 @@ def TFL_SoftmaxOp : TFL_Op<"softmax", [
   let description = [{
     Computes element-wise softmax activations with the following formula
 
-      exp(input) / tf.reduce_sum(exp(input * beta), dim)
+      exp(input * beta) / tf.reduce_sum(exp(input * beta), dim)
   }];
 
   let arguments = (
@@ -3508,12 +3554,12 @@ def TFL_TransposeOp : TFL_Op<"transpose", [
   }];
 
   let arguments = (ins
-    TFL_TensorOf<[I32, F32, I8, UI8, QI8, QUI8, TFL_Quint8, I1, I64, QI16]>:$input,
+    TFL_TensorOf<[I32, F32, I8, UI8, QI8, QUI8, TFL_I4, QI4, TFL_Quint8, I1, I64, QI16]>:$input,
     TFL_TensorOf<[I32]>:$perm
   );
 
   let results = (outs
-    TFL_TensorOf<[I32, F32, I8, UI8, QI8, QUI8, TFL_Quint8, I1, I64, QI16]>:$output
+    TFL_TensorOf<[I32, F32, I8, UI8, QI8, QUI8, TFL_I4, QI4, TFL_Quint8, I1, I64, QI16]>:$output
   );
 
   let hasVerifier = 1;
@@ -3926,10 +3972,13 @@ def TFL_CastOp : TFL_Op<"cast", [
   }];
 
   let arguments = (ins
-    TFL_TensorOf<[F16, F32, F64, I1, TFL_I4, I16, UI16, I32, UI32, I64, TFL_Quint8, UI8, I8, Complex<F<32>>]>:$input
+    TFL_TensorOf<[F16, BF16, F32, F64, I1, TFL_I4, I16, UI16, I32, UI32, I64, TFL_Quint8, UI8, I8, Complex<F<32>>]>:$input
   );
 
-  let results = (outs TFL_TensorOf<[F16, F32, F64, I1, I16, UI16, I32, UI32, I64, TFL_Quint8, UI8, I8, Complex<F<32>>]>:$output);
+  // TODO(b/393644251): Temporary support for INT4 TFL_CastOp. Runtime
+  // probably already supports INT4. We should remove the INT4 support here or
+  // make sure the runtime supports is there, as part of closing the bug.
+  let results = (outs TFL_TensorOf<[F16, BF16, F32, F64, I1, TFL_I4, I16, UI16, I32, UI32, I64, TFL_Quint8, UI8, I8, Complex<F<32>>]>:$output);
 
   // TFLite's cast op does not utilize CastOptions, instead derives types
   // from the TfLiteTensors.
@@ -3937,7 +3986,7 @@ def TFL_CastOp : TFL_Op<"cast", [
 
   let hasFolder = 1;
 }
-// LINT.ThenChange(//tensorflow/compiler/mlir/lite/transforms/while_loop_outline.cc)
+// LINT.ThenChange(//tensorflow/compiler/mlir/lite/transforms/tf_legalizations/while_loop_outline_pass.cc)
 
 def TFL_MirrorPadOp: TFL_Op<"mirror_pad", [
                      SameOperandsAndResultsScale,
@@ -4046,13 +4095,13 @@ def TFL_DynamicUpdateSliceOp: TFL_Op<"dynamic_update_slice", [
   }];
 
   let arguments = (ins
-    TFL_TensorOf<[I1, I8, I32, I64, F32]>:$operand,
-    TFL_TensorOf<[I1, I8, I32, I64, F32]>:$update,
-    TFL_I32Tensor:$start_indices
+    TFL_TensorOf<[I1, I8, I32, I64, F32, F16]>:$operand,
+    TFL_TensorOf<[I1, I8, I32, I64, F32, F16]>:$update,
+    TFL_I32OrI64Tensor:$start_indices
   );
 
   let results = (
-    outs TFL_TensorOf<[I1, I8, I32, I64, F32]>:$output);
+    outs TFL_TensorOf<[I1, I8, I32, I64, F32, F16]>:$output);
 
   let hasFolder = 1;
 }
@@ -4078,6 +4127,7 @@ def TFL_BitcastOp : TFL_Op<"bitcast", [Pure]> {
 }
 
 def TFL_BitwiseXorOp : TFL_Op<"bitwise_xor", [
+    ResultsBroadcastableShape,
     Commutative,
     SameOperandsAndResultElementType,
     Pure]> {
@@ -4095,6 +4145,8 @@ def TFL_BitwiseXorOp : TFL_Op<"bitwise_xor", [
   let results = (outs
     TFL_TensorOf<[I8, UI8, I16, UI16, I32, UI32]>:$output
   );
+
+  let hasFolder = 1;
 }
 
 def TFL_RightShiftOp : TFL_Op<"right_shift", [
@@ -4119,6 +4171,7 @@ def TFL_RightShiftOp : TFL_Op<"right_shift", [
 //===----------------------------------------------------------------------===//
 // Quantization ops.
 //===----------------------------------------------------------------------===//
+
 def TFL_DequantizeOp: TFL_Op<"dequantize", [NoMemoryEffect]> {
   let summary = "Dequantize operator";
 
@@ -5399,12 +5452,12 @@ subsequent operation and then be optimized away, however.)
   }];
 
   let arguments = (ins
-    TFL_TensorOf<[F32, I32, I1, TFL_I4, I8, QI8, UI8, QUI8, I16, QI16, I64, Complex<F<32>>]>:$input,
+    TFL_TensorOf<[F32, I32, I1, TFL_I4, I8, QI8, UI8, UI32, QUI8, I16, QI16, I64, Complex<F<32>>]>:$input,
     TFL_I32OrI64Tensor:$shape
   );
 
   let results = (outs
-    TFL_TensorOf<[F32, I32, I1, TFL_I4, I8, QI8, UI8, QUI8, I16, QI16, I64, Complex<F<32>>]>:$output
+    TFL_TensorOf<[F32, I32, I1, TFL_I4, I8, QI8, UI8, UI32, QUI8, I16, QI16, I64, Complex<F<32>>]>:$output
   );
 
   let hasCanonicalizer = 1;

@@ -1,4 +1,4 @@
-/* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2023 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,8 +15,17 @@ limitations under the License.
 
 #ifndef XLA_SERVICE_CPU_ONEDNN_UTIL_H_
 #define XLA_SERVICE_CPU_ONEDNN_UTIL_H_
-#if defined(INTEL_MKL) && defined(ENABLE_ONEDNN_V3)
 
+#if defined(INTEL_MKL)
+
+#define EIGEN_USE_THREADS
+
+#include "unsupported/Eigen/CXX11/Tensor"
+#include "dnnl.hpp"
+#include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/service/cpu/backend_config.pb.h"
+#include "xla/service/cpu/onednn_config.pb.h"
+#include "xla/tsl/util/onednn_threadpool.h"
 #include "xla/xla_data.pb.h"
 #include "tsl/platform/cpu_info.h"
 
@@ -25,21 +34,60 @@ namespace cpu {
 
 inline bool IsSupportedType(xla::PrimitiveType dtype) {
   using tsl::port::CPUFeature;
-  static bool is_bf16_supported = TestCPUFeature(CPUFeature::AVX512_BF16) ||
-                                  TestCPUFeature(CPUFeature::AMX_BF16);
+  // TODO(intel-tf): Enable more types.
   switch (dtype) {
     case F32:
       return true;
     case BF16:
-      return is_bf16_supported;
+      return TestCPUFeature(CPUFeature::AVX512F) ||
+             TestCPUFeature(CPUFeature::AVX_NE_CONVERT) ||
+             TestCPUFeature(CPUFeature::AMX_BF16);
+    case F16:
+      return (TestCPUFeature(CPUFeature::AVX512BW) &&
+              (TestCPUFeature(CPUFeature::AVX512_FP16) ||
+               TestCPUFeature(CPUFeature::AMX_FP16))) ||
+             TestCPUFeature(CPUFeature::AVX_NE_CONVERT);
     default:
-      break;
+      return false;
   }
   return false;
 }
 
+struct FusedOperandsRef {
+  const std::vector<void*>& bufs;
+  std::vector<std::pair<int, dnnl::memory>>& postop_args;
+};
+
+std::unique_ptr<tsl::OneDnnThreadPool> CreateOneDnnThreadPool(
+    const Eigen::ThreadPoolDevice* threadpool_device);
+
+dnnl::stream MakeOneDnnStream(
+    const dnnl::engine& cpu_engine,
+    dnnl::threadpool_interop::threadpool_iface* thread_pool);
+
+typedef BackendConfig::BackendConfigOneofCase BackendConfigOneofCase;
+
+// These template functions must have explicit specialization at the definition
+// site.
+template <typename PrimDesc>
+std::unique_ptr<PrimDesc> CreateOneDnnPrimDesc(HloInstruction*);
+
+template <BackendConfigOneofCase config, typename TransformationType = void>
+struct PrimitiveTrait;
+
+template <BackendConfigOneofCase config>
+typename PrimitiveTrait<config>::pointer_type GetKernelConfig(
+    absl::StatusOr<BackendConfig>*);
+
+dnnl::post_ops PopulateOneDnnPostOps(
+    const dnnl::engine& cpu_engine,
+    const std::vector<dnnl::memory::desc>& fused_mds,
+    const OneDnnFusionConfig* fusion_config,
+    FusedOperandsRef* fused_operands_ref = nullptr,
+    dnnl::memory::desc* bias_md = nullptr);
+
 }  // namespace cpu
 }  // namespace xla
 
-#endif  // INTEL_MKL && ENABLE_ONEDNN_V3
+#endif  // INTEL_MKL
 #endif  // XLA_SERVICE_CPU_ONEDNN_UTIL_H_

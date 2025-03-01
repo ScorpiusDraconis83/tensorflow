@@ -77,7 +77,7 @@ class ColocationGraphToIOColocationGroups {
       ColocationGraph* colocation_graph)
       : colocation_graph_(colocation_graph), next_group_id_(0) {}
 
-  void AssignGroups(const gtl::InlinedVector<Node*, 4>& nodes,
+  void AssignGroups(const absl::InlinedVector<Node*, 4UL>& nodes,
                     std::vector<int>* groups) {
     for (int i = 0; i < nodes.size(); ++i) {
       int root_id = colocation_graph_->FindAndUpdateRoot(nodes[i]->id());
@@ -94,7 +94,7 @@ class ColocationGraphToIOColocationGroups {
     }
   }
 
-  Status FillGroups(std::vector<PossibleDevices>* group_devices) {
+  absl::Status FillGroups(std::vector<PossibleDevices>* group_devices) {
     group_devices->resize(group_ids_.size());
     for (const auto& it : group_ids_) {
       int assigned_group_id = it.second;
@@ -102,7 +102,7 @@ class ColocationGraphToIOColocationGroups {
       const Member& member = colocation_graph_->members()[it.first];
       TF_RETURN_IF_ERROR(member.FillPossibleDevices(&possible_devices));
     }
-    return OkStatus();
+    return absl::OkStatus();
   }
 
  private:
@@ -125,8 +125,8 @@ InspectingPlacer::InspectingPlacer(const FunctionStack& stack,
       allow_soft_placement_(allow_soft_placement),
       log_device_placement_(log_device_placement) {}
 
-Status InspectingPlacer::ComputeIOColocationGroups(const Node& node,
-                                                   IOColocationGroups* groups) {
+absl::Status InspectingPlacer::ComputeIOColocationGroups(
+    const Node& node, IOColocationGroups* groups) {
   core::RefCountPtr<FunctionRecord> fdef;
   NameAttrList func;
   TF_RETURN_IF_ERROR(GetFunctionDefAndAttrs(flib_def_, node, &fdef, &func));
@@ -156,7 +156,7 @@ Status InspectingPlacer::ComputeIOColocationGroups(const Node& node,
   converter.AssignGroups(fbody->arg_nodes, &groups->input_groups);
   converter.AssignGroups(fbody->ret_nodes, &groups->output_groups);
   TF_RETURN_IF_ERROR(converter.FillGroups(&groups->group_devices));
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 }  // namespace tensorflow

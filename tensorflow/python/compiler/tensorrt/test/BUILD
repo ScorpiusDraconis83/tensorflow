@@ -19,7 +19,6 @@ exports_files(
 py_strict_library(
     name = "test_utils",
     srcs = ["test_utils.py"],
-    srcs_version = "PY3",
 )
 
 py_strict_library(
@@ -73,22 +72,6 @@ filegroup(
     visibility = ["//tensorflow/python/compiler/tensorrt:__pkg__"],
 )
 
-filegroup(
-    name = "quantization_mnist_test_srcs",
-    srcs = ["quantization_mnist_test.py"],
-    visibility = ["//tensorflow/python/compiler/tensorrt:__pkg__"],
-)
-
-filegroup(
-    name = "quantization_mnist_test_data",
-    srcs = [
-        "testdata/mnist/checkpoint",
-        "testdata/mnist/model.ckpt-46900.data-00000-of-00001",
-        "testdata/mnist/model.ckpt-46900.index",
-    ],
-    visibility = ["//tensorflow/python/compiler/tensorrt:__pkg__"],
-)
-
 base_tags = [
     "no_cuda_on_cpu_tap",
     "no_rocm",
@@ -101,7 +84,6 @@ base_tags = [
 cuda_py_strict_test(
     name = "base_test",
     srcs = ["base_test.py"],
-    python_version = "PY3",
     tags = base_tags + [
         "no_oss",  # TODO(b/165611343): Need to address the failures for CUDA 11 in OSS build.
         "notap",  # TODO(b/291653036): Some of the base tests are failing w/ TensorRT-8
@@ -124,7 +106,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "conv2d_test",
     srcs = ["conv2d_test.py"],
-    python_version = "PY3",
     tags = base_tags + ["no_oss"],  # b/198501457
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -141,7 +122,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "combined_nms_test",
     srcs = ["combined_nms_test.py"],
-    python_version = "PY3",
     tags = base_tags + ["no_oss"],
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -158,7 +138,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "tf_function_test",
     srcs = ["tf_function_test.py"],
-    python_version = "PY3",
     tags = base_tags + [
         "manual",  # TODO(b/231239602): re-enable once naming issue is resolved.
         "no_oss",  # TODO(b/231239602): re-enable once naming issue is resolved.
@@ -188,7 +167,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "batch_matmul_test",
     srcs = ["batch_matmul_test.py"],
-    python_version = "PY3",
     tags = base_tags,
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -205,7 +183,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "biasadd_matmul_test",
     srcs = ["biasadd_matmul_test.py"],
-    python_version = "PY3",
     tags = base_tags,
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -223,7 +200,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "binary_tensor_weight_broadcast_test",
     srcs = ["binary_tensor_weight_broadcast_test.py"],
-    python_version = "PY3",
     # TODO(b/297490791): Reenable after TensorRT regression has been fixed
     tags = base_tags + ["no_oss"],
     xla_enable_strict_auto_jit = False,
@@ -241,7 +217,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "bool_test",
     srcs = ["bool_test.py"],
-    python_version = "PY3",
     tags = base_tags,
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -257,7 +232,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "cast_test",
     srcs = ["cast_test.py"],
-    python_version = "PY3",
     tags = base_tags,
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -273,7 +247,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "concatenation_test",
     srcs = ["concatenation_test.py"],
-    python_version = "PY3",
     tags = base_tags,
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -290,7 +263,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "const_broadcast_test",
     srcs = ["const_broadcast_test.py"],
-    python_version = "PY3",
     tags = base_tags,
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -305,7 +277,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "data_dependent_shape_test",
     srcs = ["data_dependent_shape_test.py"],
-    python_version = "PY3",
     tags = base_tags,
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -320,7 +291,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "dynamic_input_shapes_test",
     srcs = ["dynamic_input_shapes_test.py"],
-    python_version = "PY3",
     tags = base_tags,
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -337,7 +307,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "identity_output_test",
     srcs = ["identity_output_test.py"],
-    python_version = "PY3",
     tags = base_tags,
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -352,7 +321,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "int32_test",
     srcs = ["int32_test.py"],
-    python_version = "PY3",
     tags = base_tags,
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -369,7 +337,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "lru_cache_test",
     srcs = ["lru_cache_test.py"],
-    python_version = "PY3",
     tags = base_tags,
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -387,7 +354,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "memory_alignment_test",
     srcs = ["memory_alignment_test.py"],
-    python_version = "PY3",
     tags = base_tags + ["no_oss"],  # TODO(b/285588022)
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -404,7 +370,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "multi_connection_neighbor_engine_test",
     srcs = ["multi_connection_neighbor_engine_test.py"],
-    python_version = "PY3",
     tags = base_tags,
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -420,7 +385,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "neighboring_engine_test",
     srcs = ["neighboring_engine_test.py"],
-    python_version = "PY3",
     tags = base_tags,
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -437,7 +401,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "quantization_test",
     srcs = ["quantization_test.py"],
-    python_version = "PY3",
     tags = base_tags,
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -454,7 +417,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "rank_two_test",
     srcs = ["rank_two_test.py"],
-    python_version = "PY3",
     tags = base_tags,
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -471,7 +433,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "reshape_transpose_test",
     srcs = ["reshape_transpose_test.py"],
-    python_version = "PY3",
     tags = base_tags,
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -487,7 +448,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "topk_test",
     srcs = ["topk_test.py"],
-    python_version = "PY3",
     tags = base_tags,
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -503,7 +463,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "trt_engine_op_shape_test",
     srcs = ["trt_engine_op_shape_test.py"],
-    python_version = "PY3",
     tags = base_tags,
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -523,7 +482,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "trt_mode_test",
     srcs = ["trt_mode_test.py"],
-    python_version = "PY3",
     tags = base_tags,
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -538,7 +496,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "unary_test",
     srcs = ["unary_test.py"],
-    python_version = "PY3",
     tags = base_tags,
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -556,7 +513,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "vgg_block_nchw_test",
     srcs = ["vgg_block_nchw_test.py"],
-    python_version = "PY3",
     tags = base_tags,
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -574,7 +530,6 @@ cuda_py_strict_test(
 cuda_py_strict_test(
     name = "vgg_block_test",
     srcs = ["vgg_block_test.py"],
-    python_version = "PY3",
     tags = base_tags,
     xla_enable_strict_auto_jit = False,
     deps = [

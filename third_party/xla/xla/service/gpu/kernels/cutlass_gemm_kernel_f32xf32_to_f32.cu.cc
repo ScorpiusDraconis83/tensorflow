@@ -1,4 +1,4 @@
-/* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2023 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,6 +26,6 @@ using GemmOperation =
 XLA_GPU_DEFINE_CUTLASS_GEMM_TRAITS(F32xF32ToF32<Arch::kDefault>,
                                    GemmOperation);
 
-template struct Adaptor<F32xF32ToF32<Arch::kDefault>>;
-template struct DeviceKernel<F32xF32ToF32<Arch::kDefault>>;
+template class Adaptor<F32xF32ToF32<Arch::kDefault>>;
+template class DeviceKernel<F32xF32ToF32<Arch::kDefault>>;
 }  // namespace xla::gpu::kernel::gemm_universal

@@ -34,16 +34,19 @@ limitations under the License.
 #include "xla/client/client_library.h"
 #include "xla/client/local_client.h"
 #include "xla/pjrt/pjrt_client.h"
+#include "xla/service/compiler.h"
+#include "xla/stream_executor/platform_manager.h"
+#include "xla/tsl/framework/device_type.h"
 #include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/resource_mgr.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/status.h"
 #include "tensorflow/core/tfrt/common/create_pjrt_client_util.h"
 #include "tensorflow/core/tfrt/common/global_state.h"
 #include "tensorflow/core/tfrt/common/pjrt_util.h"
 #include "tensorflow/core/tpu/tpu_defs.h"
-#include "tsl/framework/device_type.h"
 
 namespace tensorflow {
 namespace {
@@ -82,7 +85,7 @@ PjRtDeviceCompiler* CreatePjRtDeviceCompiler(DeviceType compilation_device_type,
       std::make_unique<PjRtDeviceCompilerClient>(pjrt_client));
 }
 
-StatusOr<std::optional<std::set<int>>> GetAllowedGpus(
+absl::StatusOr<std::optional<std::set<int>>> GetAllowedGpus(
     FunctionLibraryRuntime* flr) {
   std::optional<std::set<int>> gpu_ids = std::nullopt;
 
@@ -95,7 +98,7 @@ StatusOr<std::optional<std::set<int>>> GetAllowedGpus(
   return gpu_ids;
 }
 
-Status GetCompilationDeviceTypeAndPjRtClient(
+absl::Status GetCompilationDeviceTypeAndPjRtClient(
     const XlaPlatformInfo& platform_info, FunctionLibraryRuntime* flr,
     DeviceType* compilation_device_type, xla::PjRtClient** pjrt_client) {
   DeviceType device_type = platform_info.device_type();
@@ -107,7 +110,7 @@ Status GetCompilationDeviceTypeAndPjRtClient(
     *compilation_device_type =
         platform_info.xla_device_metadata()->jit_device_type();
     TF_ASSIGN_OR_RETURN(*pjrt_client, GetOrCreatePjRtClient(device_type));
-    return OkStatus();
+    return absl::OkStatus();
   }
 
   if (platform_info.pjrt_device_metadata()) {
@@ -117,7 +120,7 @@ Status GetCompilationDeviceTypeAndPjRtClient(
     *compilation_device_type =
         platform_info.pjrt_device_metadata()->jit_device_type();
     TF_ASSIGN_OR_RETURN(*pjrt_client, GetOrCreatePjRtClient(device_type));
-    return OkStatus();
+    return absl::OkStatus();
   }
 
   // TFRT-TPU is used if device_type is `DEVICE_TPU` and platform_info does not
@@ -125,7 +128,7 @@ Status GetCompilationDeviceTypeAndPjRtClient(
   if (device_type == DEVICE_TPU) {
     *compilation_device_type = DeviceType(DEVICE_TPU_XLA_JIT);
     TF_ASSIGN_OR_RETURN(*pjrt_client, GetOrCreatePjRtClient(device_type));
-    return OkStatus();
+    return absl::OkStatus();
   }
 
   VLOG(2) << "platform_info.xla_device_metadata not found and "
@@ -146,7 +149,7 @@ Status GetCompilationDeviceTypeAndPjRtClient(
   TF_ASSIGN_OR_RETURN(*pjrt_client,
                       GetOrCreatePjRtClient(device_type, allowed_gpus));
 
-  return OkStatus();
+  return absl::OkStatus();
 }
 }  // namespace
 
@@ -167,7 +170,7 @@ std::string GetPersistentCacheDirectory(
   return GetMarkForCompilationPassFlags()->tf_xla_persistent_cache_directory;
 }
 
-xla::StatusOr<std::optional<std::set<int>>> ParseVisibleDeviceList(
+absl::StatusOr<std::optional<std::set<int>>> ParseVisibleDeviceList(
     absl::string_view visible_device_list) {
   std::set<int> gpu_ids;
   if (visible_device_list.empty()) {
@@ -188,9 +191,33 @@ xla::StatusOr<std::optional<std::set<int>>> ParseVisibleDeviceList(
   return {{gpu_ids}};
 }
 
-Status BuildXlaDeviceCompiler(DeviceBase* device, FunctionLibraryRuntime* flr,
-                              const XlaPlatformInfo& platform_info,
-                              XlaDeviceCompiler** xla_device_compiler) {
+absl::StatusOr<DeviceType> GetCompilationDeviceType(
+    const DeviceType& platform_device_type) {
+  DeviceType compilation_device_type = platform_device_type;
+  const XlaOpRegistry::DeviceRegistration* registration = nullptr;
+  if (!XlaOpRegistry::GetCompilationDevice(platform_device_type.type(),
+                                           &registration)) {
+    return errors::InvalidArgument("No JIT device registered for ",
+                                   platform_device_type.type());
+  }
+  compilation_device_type = DeviceType(registration->compilation_device_name);
+  return compilation_device_type;
+}
+
+absl::Status BuildXlaDeviceCompiler(DeviceBase* device,
+                                    FunctionLibraryRuntime* flr,
+                                    const XlaPlatformInfo& platform_info,
+                                    DeviceType compilation_device_type,
+                                    XlaDeviceCompiler** xla_device_compiler) {
+  if (platform_info.platform_id() == nullptr &&
+      platform_info.device_type() == DEVICE_GPU) {
+    // We do not need to (and cannot) build a real device compiler for GPU
+    // if the platform ID is null. We just return a placeholder for supporting
+    // cross platform lowering.
+    *xla_device_compiler = new XlaDeviceCompiler(/*persistor=*/nullptr,
+                                                 /*compiler_client=*/nullptr);
+    return absl::OkStatus();
+  }
   std::string persistent_cache_directory =
       GetPersistentCacheDirectory(platform_info.device_type());
 
@@ -205,7 +232,7 @@ Status BuildXlaDeviceCompiler(DeviceBase* device, FunctionLibraryRuntime* flr,
         persistor_config,
         platform_info.xla_device_metadata()->jit_device_type(),
         platform_info.xla_device_metadata()->client());
-    return OkStatus();
+    return absl::OkStatus();
   }
 
   // TFRT-TPU is used if device type is `DEVICE_TPU` and platform_info does not
@@ -216,16 +243,19 @@ Status BuildXlaDeviceCompiler(DeviceBase* device, FunctionLibraryRuntime* flr,
   if (platform_info.device_type() == DEVICE_TPU) {
     *xla_device_compiler = CreateXlaDeviceCompiler(
         persistor_config, DeviceType(DEVICE_TPU_XLA_JIT), nullptr);
-    return OkStatus();
+    return absl::OkStatus();
   }
 
+  if (platform_info.platform_id() == nullptr) {
+    return errors::InvalidArgument("platform_id is null.");
+  }
   auto platform =
-      se::MultiPlatformManager::PlatformWithId(platform_info.platform_id());
+      se::PlatformManager::PlatformWithId(platform_info.platform_id());
   if (!platform.ok()) {
     return platform.status();
   }
 
-  StatusOr<xla::Compiler*> compiler_for_platform =
+  absl::StatusOr<xla::Compiler*> compiler_for_platform =
       xla::Compiler::GetForPlatform(platform.value());
   if (!compiler_for_platform.ok()) {
     // In some rare cases (usually in unit tests with very small clusters) we
@@ -233,12 +263,12 @@ Status BuildXlaDeviceCompiler(DeviceBase* device, FunctionLibraryRuntime* flr,
     // (which would normally force the cluster to be compiled using XLA:GPU)
     // into an XLA cluster with no GPU operations (i.e. containing only CPU
     // operations).  Such a cluster can fail compilation (in way that
-    // MarkForCompilation could not have detected) if the CPU JIT is not linked
-    // in.
+    // MarkForCompilation could not have detected) if the CPU JIT is not
+    // linked in.
     //
-    // So bail out of _XlaCompile in this case, and let the executor handle the
-    // situation for us.
-    const Status& status = compiler_for_platform.status();
+    // So bail out of _XlaCompile in this case, and let the executor handle
+    // the situation for us.
+    const absl::Status& status = compiler_for_platform.status();
     if (status.code() == error::NOT_FOUND) {
       return errors::Unimplemented("Could not find compiler for platform ",
                                    platform.value()->Name(), ": ",
@@ -258,24 +288,15 @@ Status BuildXlaDeviceCompiler(DeviceBase* device, FunctionLibraryRuntime* flr,
     client_options.set_allowed_devices(allowed_gpus);
   }
 
-  auto client = xla::ClientLibrary::GetOrCreateLocalClient(client_options);
-  if (!client.ok()) {
-    return client.status();
-  }
-  const XlaOpRegistry::DeviceRegistration* registration;
-  if (!XlaOpRegistry::GetCompilationDevice(platform_info.device_type().type(),
-                                           &registration)) {
-    return errors::InvalidArgument("No JIT device registered for ",
-                                   platform_info.device_type().type());
-  }
+  TF_ASSIGN_OR_RETURN(
+      auto client, xla::ClientLibrary::GetOrCreateLocalClient(client_options));
 
   *xla_device_compiler = CreateXlaDeviceCompiler(
-      persistor_config, DeviceType(registration->compilation_device_name),
-      client.value());
-  return OkStatus();
+      persistor_config, compilation_device_type, client);
+  return absl::OkStatus();
 }
 
-Status GetOrCreatePjRtDeviceCompilerAndProfiler(
+absl::Status GetOrCreatePjRtDeviceCompilerAndProfiler(
     const XlaPlatformInfo& platform_info, ResourceMgr* rm,
     FunctionLibraryRuntime* flr, PjRtDeviceCompiler** pjrt_device_compiler,
     DeviceCompilationProfiler** profiler) {
@@ -287,7 +308,7 @@ Status GetOrCreatePjRtDeviceCompilerAndProfiler(
   bool deleted_old_device_compiler = false;
 
   // Lookup the DeviceCompiler, create one if not found.
-  Status s = rm->Lookup<PjRtDeviceCompiler>(
+  absl::Status s = rm->Lookup<PjRtDeviceCompiler>(
       rm->default_container(), compiler_name, pjrt_device_compiler);
   if (s.ok() && device_type == DEVICE_TPU) {
     auto* existing_pjrt_client = (*pjrt_device_compiler)->client();
@@ -318,7 +339,7 @@ Status GetOrCreatePjRtDeviceCompilerAndProfiler(
         [&](PjRtDeviceCompiler** pjrt_device_compiler) {
           *pjrt_device_compiler =
               CreatePjRtDeviceCompiler(compilation_device_type, pjrt_client);
-          return OkStatus();
+          return absl::OkStatus();
         }));
   }
 
@@ -326,13 +347,13 @@ Status GetOrCreatePjRtDeviceCompilerAndProfiler(
       rm->default_container(), profiler_name, profiler,
       [](DeviceCompilationProfiler** profiler) {
         *profiler = new DeviceCompilationProfiler();
-        return OkStatus();
+        return absl::OkStatus();
       }));
 
-  return OkStatus();
+  return absl::OkStatus();
 }
 
-Status GetOrCreatePjRtDeviceCompilerAndProfiler(
+absl::Status GetOrCreatePjRtDeviceCompilerAndProfiler(
     const OpKernelContext& ctx, const XlaPlatformInfo& platform_info,
     FunctionLibraryRuntime* flr,
     DeviceCompiler<xla::PjRtLoadedExecutable, xla::PjRtClient>**
@@ -357,7 +378,7 @@ XlaPlatformInfo XlaPlatformInfoFromDevice(DeviceBase* device_base) {
     auto device = static_cast<Device*>(device_base);
     platform_id = device->tensorflow_accelerator_device_info()
                       ->stream->parent()
-                      ->platform()
+                      ->GetPlatform()
                       ->id();
   } else if (XlaDevice::GetMetadataFromDevice(device_base, &xla_device_metadata)
                  .ok()) {
@@ -393,7 +414,7 @@ std::shared_ptr<se::DeviceMemoryAllocator> GetAllocator(
   if (!stream) {
     // Stream is not set for the host platform.
     se::Platform* platform =
-        se::MultiPlatformManager::PlatformWithId(platform_info.platform_id())
+        se::PlatformManager::PlatformWithId(platform_info.platform_id())
             .value();
     return std::make_shared<se::TfAllocatorAdapter>(alloc, platform);
   }

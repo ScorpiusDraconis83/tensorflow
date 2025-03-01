@@ -1,4 +1,4 @@
-/* Copyright 2021 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2021 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,14 +29,13 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
-#include "xla/service/hlo_parser.h"
+#include "xla/hlo/parser/hlo_parser.h"
+#include "xla/hlo/testlib/test.h"
+#include "xla/hlo/testlib/verified_hlo_module.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
-#include "xla/statusor.h"
 #include "xla/stream_executor/device_description.h"
-#include "xla/test.h"
 #include "xla/tests/hlo_test_base.h"
-#include "xla/tests/verified_hlo_module.h"
 #include "xla/util.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"
@@ -53,7 +52,7 @@ class CudnnSupportUtilsTest : public HloTestBase {
  public:
   // Gets the custom call with `target` from the `module`. Expects that there is
   // one and only one matching call.
-  StatusOr<HloCustomCallInstruction*> GetCustomCall(
+  absl::StatusOr<HloCustomCallInstruction*> GetCustomCall(
       xla::VerifiedHloModule* module, absl::string_view target) {
     HloCustomCallInstruction* call = nullptr;
     for (HloComputation* comp : module->MakeNonfusionComputations()) {

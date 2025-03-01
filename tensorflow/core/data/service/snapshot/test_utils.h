@@ -23,13 +23,16 @@ limitations under the License.
 #include "absl/container/flat_hash_set.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/time/time.h"
+#include "xla/tsl/platform/env.h"
+#include "tensorflow/core/data/service/byte_size.h"
 #include "tensorflow/core/data/service/common.pb.h"
 #include "tensorflow/core/data/service/snapshot/file_utils.h"
 #include "tensorflow/core/data/service/snapshot/path_utils.h"
 #include "tensorflow/core/data/service/task_runner.h"
 #include "tensorflow/core/data/snapshot_utils.h"
 #include "tensorflow/core/framework/tensor.h"
-#include "tsl/platform/env.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tsl/platform/path.h"
 
 namespace tensorflow {
@@ -72,7 +75,7 @@ class PartialSnapshotWriter {
   static absl::StatusOr<PartialSnapshotWriter> Create(
       const DatasetDef& dataset, const std::string& snapshot_path,
       int64_t stream_index, const std::string& compression,
-      int64_t max_chunk_size_bytes = 1,
+      ByteSize max_chunk_size = ByteSize::Bytes(1),
       absl::Duration checkpoint_interval = absl::Microseconds(1));
   virtual ~PartialSnapshotWriter() = default;
   PartialSnapshotWriter(const PartialSnapshotWriter&) = delete;
@@ -95,8 +98,7 @@ class PartialSnapshotWriter {
  private:
   PartialSnapshotWriter(const DatasetDef& dataset,
                         const std::string& snapshot_path, int64_t stream_index,
-                        const std::string& compression,
-                        int64_t max_chunk_size_bytes,
+                        const std::string& compression, ByteSize max_chunk_size,
                         absl::Duration checkpoint_interval);
 
   absl::Status Initialize();
@@ -105,7 +107,7 @@ class PartialSnapshotWriter {
   const std::string snapshot_path_;
   const int64_t stream_index_;
   const std::string compression_;
-  const int64_t max_chunk_size_bytes_;
+  const ByteSize max_chunk_size_;
   const absl::Duration checkpoint_interval_;
 
   std::string tmp_snapshot_path_;

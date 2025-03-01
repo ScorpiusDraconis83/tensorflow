@@ -1,10 +1,6 @@
 # NVIDIA NCCL 2
 # A package of optimized primitives for collective multi-GPU communication.
 
-licenses(["notice"])
-
-exports_files(["LICENSE.txt"])
-
 load("@bazel_skylib//rules:expand_template.bzl", "expand_template")
 load("@bazel_skylib//rules:write_file.bzl", "write_file")
 load(
@@ -20,11 +16,15 @@ load(
     "GENERATED_SOURCES",
 )
 
+licenses(["notice"])
+
+exports_files(["LICENSE.txt"])
+
 NCCL_MAJOR = 2
 
-NCCL_MINOR = 19
+NCCL_MINOR = 25
 
-NCCL_PATCH = 3
+NCCL_PATCH = 1
 
 NCCL_VERSION = NCCL_MAJOR * 10000 + NCCL_MINOR * 100 + NCCL_PATCH  # e.g., 21605
 
@@ -163,7 +163,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "@local_config_cuda//cuda:cuda_headers",
-        "@local_tsl//tsl/cuda:nccl_stub",
+        "@local_xla//xla/tsl/cuda:nccl_stub",
     ],
 )
 
@@ -192,6 +192,10 @@ cc_library(
             "src/transport/coll_net.cc",
             "src/transport/net.cc",
             "src/enqueue.cc",
+            # RAS is a health-checking system (starting from NCCL 2.24:
+            # https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/troubleshooting/ras.html
+            # It's not reqired for NCCL to work.
+            "src/ras/client.cc",
         ],
     ) + [
         # Required for header inclusion checking (see
@@ -200,6 +204,7 @@ cc_library(
         # from the virtual includes directory.
         "src/include/collectives.h",
         "src/nccl.h",
+        "src/ras/ras_internal.h",
     ],
     hdrs = ["src/nccl.h"],
     include_prefix = "third_party/nccl",

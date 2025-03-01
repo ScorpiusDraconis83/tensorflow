@@ -1,4 +1,4 @@
-/* Copyright 2021 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2021 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,6 +18,6 @@ limitations under the License.
 
 // Transitional forwarding header. Please include cpu/cpu_client.h directly.
 
-#include "xla/pjrt/cpu/cpu_client.h"
+#include "xla/pjrt/plugin/xla_cpu/xla_cpu_pjrt_client.h"
 
 #endif  // XLA_PJRT_TFRT_CPU_PJRT_CLIENT_H_
